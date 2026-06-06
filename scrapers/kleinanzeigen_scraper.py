@@ -1,6 +1,6 @@
 from pathlib import Path
 import time
-
+from datetime import datetime
 import pandas as pd
 from playwright.sync_api import sync_playwright
 
@@ -16,7 +16,7 @@ def run(max_pages: int = 1):
     results = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
         all_listings = []
@@ -39,7 +39,9 @@ def run(max_pages: int = 1):
                 detail_html = fetch_detail_page(page, listing["url"])
                 detail_data = parse_detail_page(detail_html, listing["url"])
 
-                row = {**listing, **detail_data}
+                row = {**listing, **detail_data,
+                        "scraped_at": datetime.utcnow().isoformat(),
+                    }
                 results.append(row)
 
                 print(
@@ -57,6 +59,27 @@ def run(max_pages: int = 1):
         browser.close()
 
     df = pd.DataFrame(results)
+    before = len(df)
+
+    df = df.drop_duplicates(subset=["listing_id"])
+
+    after = len(df)
+
+    print(f"Removed {before - after} duplicates")
+
+    print("\nDATA QUALITY")
+
+    for col in [
+        "price",
+        "mileage_km",
+        "first_registration",
+        "fuel",
+        "transmission",
+    ]:
+        missing = df[col].isna().sum()
+    
+        print(f"{col}: {missing}")
+
     output_path = f"data/bmw_320d_nrw_first_{max_pages}_pages.csv"
     df.to_csv(output_path, index=False)
 

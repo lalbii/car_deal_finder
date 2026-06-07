@@ -8,9 +8,10 @@ from parsers.search_parser import parse_search_page
 from parsers.detail_parser import parse_detail_page
 from scrapers.kleinanzeigen_search import fetch_search_page
 from scrapers.kleinanzeigen_detail import fetch_detail_page
-
+from storage.sqlite import init_db, upsert_listing
 
 def run(max_pages: int = 1):
+    init_db()
     Path("data").mkdir(exist_ok=True)
 
     results = []
@@ -43,6 +44,7 @@ def run(max_pages: int = 1):
                         "scraped_at": datetime.utcnow().isoformat(),
                     }
                 results.append(row)
+                upsert_listing(row)
 
                 print(
                     f"   price={row.get('price')} "
@@ -77,7 +79,7 @@ def run(max_pages: int = 1):
         "transmission",
     ]:
         missing = df[col].isna().sum()
-    
+
         print(f"{col}: {missing}")
 
     output_path = f"data/bmw_320d_nrw_first_{max_pages}_pages.csv"

@@ -3,3 +3,5 @@ __pycache__/
 .env
 data/*.db
 .ipynb_checkpoints/
+data/*.csv
+data/*.html

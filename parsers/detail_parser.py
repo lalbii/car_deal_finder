@@ -89,12 +89,46 @@ def parse_detail_page(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "lxml")
 
     title_el = soup.select_one("h1")
+    
+    if title_el:
+        for span in title_el.select("span"):
+            span.decompose()
+
+        title = clean_text(title_el.get_text(" ", strip=True))
+    else:
+        title = None
+    
     price_el = soup.select_one("#viewad-price")
     desc_el = soup.select_one("#viewad-description-text")
 
-    title = clean_text(title_el.get_text(" ", strip=True)) if title_el else None
     price_text = clean_text(price_el.get_text(" ", strip=True)) if price_el else None
     description = clean_text(desc_el.get_text(" ", strip=True)) if desc_el else ""
+
+    page_text = soup.get_text("\n", strip=True)
+
+    posted_date = None
+    view_count = None
+
+    date_match = re.search(r"\b(\d{2}\.\d{2}\.\d{4})\b", page_text)
+    if date_match:
+        posted_date = date_match.group(1)
+
+    view_match = re.search(r"\b(\d+)\s*(?:Aufrufe|views)?\b", page_text)
+
+    lines = [
+    clean_text(line)
+    for line in page_text.split("\n")
+        if clean_text(line)
+    ]
+
+    for i, line in enumerate(lines):
+        if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", line):
+            posted_date = line
+
+        if re.fullmatch(r"\d+", line):
+            # tarih satırından sonra gelen küçük sayı çoğu zaman görüntülenme
+            if i > 0 and re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", lines[i - 1]):
+                view_count = int(line)
 
     extracted = parse_from_description(description)
     details = parse_details_from_text(soup)
@@ -117,11 +151,13 @@ def parse_detail_page(html: str, url: str) -> dict:
         is_active = not any(word in title.lower() for word in bad_words)
 
     return {
-        "title": title,
-        "price_text": price_text,
-        "price": parse_price(price_text),
-        "description": description,
-        "is_active": is_active,
-        "url": url,
-        **extracted,
+    "title": title,
+    "price_text": price_text,
+    "price": parse_price(price_text),
+    "description": description,
+    "posted_date": posted_date,
+    "view_count": view_count,
+    "is_active": is_active,
+    "url": url,
+    **extracted,
     }

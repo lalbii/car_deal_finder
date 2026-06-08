@@ -8,17 +8,24 @@ from parsers.search_parser import parse_search_page
 from parsers.detail_parser import parse_detail_page
 from scrapers.kleinanzeigen_search import fetch_search_page
 from scrapers.kleinanzeigen_detail import fetch_detail_page
-from storage.sqlite import init_db, upsert_listing
+from storage.sqlite import init_db, upsert_listing, insert_listing_history
+from scrapers.kleinanzeigen_search import discover_max_pages
 
-def run(max_pages: int = 1):
+def run(max_pages: int | None):
     init_db()
     Path("data").mkdir(exist_ok=True)
 
     results = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=False)
         page = browser.new_page()
+
+        if max_pages==None:
+            print("Discovering max pages...")
+            max_pages = discover_max_pages(page)
+            print(f"Found {max_pages} pages")
+
 
         all_listings = []
 
@@ -41,22 +48,24 @@ def run(max_pages: int = 1):
                 detail_data = parse_detail_page(detail_html, listing["url"])
 
                 row = {**listing, **detail_data,
-                        "scraped_at": datetime.utcnow().isoformat(),
+                        "scraped_at": datetime.now().isoformat(),
                     }
                 results.append(row)
                 upsert_listing(row)
+                insert_listing_history(row)
 
                 print(
-                    f"   price={row.get('price')} "
+                    f"price={row.get('price')} "
                     f"km={row.get('mileage_km')} "
                     f"ez={row.get('first_registration')} "
                     f"active={row.get('is_active')}"
                 )
 
                 time.sleep(1)
-
             except Exception as e:
                 print(f"   ERROR: {e}")
+            if idx == 5:
+                break
 
         browser.close()
 

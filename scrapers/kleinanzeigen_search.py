@@ -8,9 +8,9 @@ def build_search_url(page_num: int) -> str:
     category = SEARCH_CONFIG["category"]
 
     if page_num == 1:
-        return f"https://www.kleinanzeigen.de/s-autos/{region}/{query}/{category}"
+        return f"https://www.kleinanzeigen.de/s-autos/{region}/sortierung:neuste/{query}/{category}"
 
-    return f"https://www.kleinanzeigen.de/s-autos/{region}/seite:{page_num}/{query}/{category}"
+    return f"https://www.kleinanzeigen.de/s-autos/{region}/sortierung:neuste/seite:{page_num}/{query}/{category}"
 
 
 def discover_max_pages(page):

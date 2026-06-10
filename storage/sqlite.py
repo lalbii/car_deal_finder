@@ -16,14 +16,15 @@ def insert_listing_history(row: dict):
     with get_connection() as conn:
         conn.execute("""
         INSERT INTO listing_history (
-            listing_id, price, mileage_km, is_active, scraped_at
+            listing_id, price, mileage_km, is_active, view_count, scraped_at
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
         """, (
             row.get("listing_id"),
             row.get("price"),
             row.get("mileage_km"),
             int(bool(row.get("is_active"))),
+            row.get("view_count"),
             now,
         ))
         conn.commit()
@@ -46,7 +47,9 @@ def init_db():
             posted_date TEXT,
             view_count INTEGER,
             first_seen TEXT,
-            last_seen TEXT
+            last_seen TEXT,
+            inactive_at TEXT,
+            last_checked_at TEXT
         )
         """)
         conn.execute("""
@@ -56,7 +59,8 @@ def init_db():
             price INTEGER,
             mileage_km INTEGER,
             is_active INTEGER,
-            scraped_at TEXT
+            scraped_at TEXT,
+            view_count INTEGER
         )
         """)
         conn.commit()
@@ -71,9 +75,9 @@ def upsert_listing(row: dict):
         INSERT INTO listings (
             listing_id, title, price, mileage_km, first_registration,
             fuel, transmission, location, url, is_active,
-            posted_date, view_count, first_seen, last_seen
+            posted_date, view_count, first_seen, last_seen, last_checked_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(listing_id) DO UPDATE SET
             title=excluded.title,
             price=excluded.price,
@@ -86,7 +90,8 @@ def upsert_listing(row: dict):
             is_active=excluded.is_active,
             last_seen=excluded.last_seen,
             posted_date=excluded.posted_date,
-            view_count=excluded.view_count
+            view_count=excluded.view_count,
+            last_checked_at=excluded.last_checked_at
         """, (
             row.get("listing_id"),
             row.get("title"),
@@ -102,5 +107,63 @@ def upsert_listing(row: dict):
             row.get("view_count"),
             now,
             now,
+            now,
         ))
+        conn.commit()
+
+def get_active_listings(limit: int | None = None) -> list[dict]:
+    query = """
+    SELECT
+        listing_id,
+        title,
+        url,
+        price,
+        location,
+        is_active,
+        first_seen,
+        last_seen,
+        last_checked_at,
+        inactive_at
+    FROM listings
+    WHERE is_active = 1
+    ORDER BY last_checked_at ASC
+    """
+
+    params = []
+
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query, params).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def mark_listing_checked(listing_id: str):
+    now = datetime.now().isoformat()
+
+    with get_connection() as conn:
+        conn.execute("""
+        UPDATE listings
+        SET last_checked_at = ?
+        WHERE listing_id = ?
+        """, (now, listing_id))
+        conn.commit()
+
+
+def mark_listing_inactive(listing_id: str):
+    now = datetime.now().isoformat()
+
+    with get_connection() as conn:
+        conn.execute("""
+        UPDATE listings
+        SET
+            is_active = 0,
+            inactive_at = ?,
+            last_checked_at = ?
+        WHERE listing_id = ?
+        """, (now, now, listing_id))
         conn.commit()

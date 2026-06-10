@@ -121,14 +121,32 @@ def parse_detail_page(html: str, url: str) -> dict:
         if clean_text(line)
     ]
 
-    for i, line in enumerate(lines):
-        if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", line):
-            posted_date = line
 
-        if re.fullmatch(r"\d+", line):
-            # tarih satırından sonra gelen küçük sayı çoğu zaman görüntülenme
-            if i > 0 and re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", lines[i - 1]):
-                view_count = int(line)
+
+    #for i, line in enumerate(lines):
+    #    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", line):
+    #        posted_date = line
+#
+    #    if re.fullmatch(r"\d+", line):
+    #        # tarih satırından sonra gelen küçük sayı çoğu zaman görüntülenme
+    #        if i > 0 and re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", lines[i - 1]):
+    #            view_count = int(line)
+
+    view_el = soup.select_one("#viewad-cntr-num")
+
+    if view_el:
+        view_text = view_el.get_text(strip=True)
+        view_count = int(view_text.replace(".", "").replace(",", ""))
+    
+    extra_info = soup.select_one("#viewad-extra-info")
+
+    if extra_info:
+        for span in extra_info.select("span"):
+            text = span.get_text(strip=True)
+
+            if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", text):
+                posted_date = text
+                break
 
     extracted = parse_from_description(description)
     details = parse_details_from_text(soup)

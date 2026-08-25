@@ -1,3 +1,5 @@
+from enum import Enum
+
 from bs4 import BeautifulSoup
 from utils.text import clean_text
 
@@ -8,6 +10,12 @@ INACTIVE_KEYWORDS = [
     "anzeige wurde gelöscht",
     "diese anzeige ist nicht mehr verfügbar",
 ]
+
+
+class ListingStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    UNKNOWN = "UNKNOWN"
 
 
 def is_listing_active(html: str) -> bool:
@@ -37,3 +45,18 @@ def is_listing_active(html: str) -> bool:
             return False
 
     return True
+
+
+def interpret_listing_status(html: str, http_status: int | None) -> ListingStatus:
+    """Interpret only confirmed outcomes; transport/server failures stay unknown."""
+    if http_status is None:
+        return ListingStatus.UNKNOWN
+    if http_status in {404, 410}:
+        return ListingStatus.INACTIVE
+    if http_status >= 400:
+        return ListingStatus.UNKNOWN
+    if http_status < 200 or http_status >= 300:
+        return ListingStatus.UNKNOWN
+    if not html:
+        return ListingStatus.UNKNOWN
+    return ListingStatus.ACTIVE if is_listing_active(html) else ListingStatus.INACTIVE

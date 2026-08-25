@@ -2,7 +2,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 from scrapers.kleinanzeigen_detail import fetch_detail_page
-from parsers.status_parser import is_listing_active
+from parsers.status_parser import ListingStatus, interpret_listing_status
 from storage.sqlite import (
     get_active_listings,
     mark_listing_checked,
@@ -26,25 +26,18 @@ def run_active_check(limit: int | None = None):
             print(f"[{idx}/{len(active_listings)}] Checking {listing_id}")
 
             try:
-                html,status = fetch_detail_page(page, url)
+                html, status = fetch_detail_page(page, url)
                 print("Status:", status)
 
-                if not(status is not None and status < 400):
+                listing_status = interpret_listing_status(html, status)
+                if listing_status == ListingStatus.INACTIVE:
                     mark_listing_inactive(listing_id)
                     print("   inactive")
-                    time.sleep(1)
-                else:
+                elif listing_status == ListingStatus.ACTIVE:
                     mark_listing_checked(listing_id)
-                    print("   active")   
-            
-                #active = is_listing_active(html)
-#
-                #if active:
-                #    mark_listing_checked(listing_id)
-                #    print("   active")
-                #else:
-                #    mark_listing_inactive(listing_id)
-                #    print("   inactive")
+                    print("   active")
+                else:
+                    print("   unknown; database status unchanged")
 
                 time.sleep(1)
 

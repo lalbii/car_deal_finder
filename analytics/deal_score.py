@@ -2,31 +2,28 @@ import sqlite3
 import re
 import pandas as pd
 
+from models.listing import TransmissionType
+from normalization.vehicle_fields import (
+    normalize_first_registration,
+    normalize_transmission,
+)
+from validation.listing_quality import (
+    DataQuality,
+    classify_first_registration,
+    classify_mileage,
+    classify_price,
+)
 
 DB_PATH = "data/listings.db"
-
-
-GERMAN_MONTHS = {
-    "Januar": 1,
-    "Februar": 2,
-    "März": 3,
-    "April": 4,
-    "Mai": 5,
-    "Juni": 6,
-    "Juli": 7,
-    "August": 8,
-    "September": 9,
-    "Oktober": 10,
-    "November": 11,
-    "Dezember": 12,
-}
+MIN_COMPARABLE_VALUES = 3
 
 
 def extract_year(first_registration: str | None) -> int | None:
-    if not first_registration:
+    normalized = normalize_first_registration(first_registration)
+    if not normalized:
         return None
 
-    match = re.search(r"(19|20)\d{2}", str(first_registration))
+    match = re.search(r"(19|20)\d{2}", normalized)
     if not match:
         return None
 
@@ -75,24 +72,14 @@ def load_listings() -> pd.DataFrame:
     conn.close()
     return df
 
-from datetime import datetime
-
-
-def parse_posted_date(date_text):
-    if not date_text:
-        return None
-
-    try:
-        return datetime.strptime(str(date_text), "%d.%m.%Y")
-    except ValueError:
-        return None
-
 
 def add_time_view_scores(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     now = pd.Timestamp.now()
-    df["posted_dt"] = pd.to_datetime(df["posted_date"], format="%d.%m.%Y", errors="coerce")
+    df["posted_dt"] = pd.to_datetime(
+        df["posted_date"], format="%d.%m.%Y", errors="coerce"
+    )
 
     df["days_since_posted"] = (
         now.tz_localize(None) - df["posted_dt"]
@@ -100,8 +87,11 @@ def add_time_view_scores(df: pd.DataFrame) -> pd.DataFrame:
 
     df["freshness_score"] = 1 - (df["days_since_posted"] / 7)
     df["freshness_score"] = df["freshness_score"].clip(lower=0, upper=1)
+    df.loc[df["days_since_posted"] < 0, "freshness_score"] = pd.NA
 
-    df["view_percentile"] = df["view_count"].rank(pct=True)
+    valid_views = pd.to_numeric(df["view_count"], errors="coerce")
+    valid_views = valid_views.where(valid_views >= 0)
+    df["view_percentile"] = valid_views.rank(pct=True)
 
     df["low_view_score"] = 1 - df["view_percentile"]
     df["hot_view_score"] = df["view_percentile"]
@@ -112,22 +102,50 @@ def add_time_view_scores(df: pd.DataFrame) -> pd.DataFrame:
 def add_deal_scores(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    df["year"] = df["first_registration"].apply(extract_year)
+    df["normalized_first_registration"] = df["first_registration"].apply(
+        lambda value: normalize_first_registration(value) if pd.notna(value) else None
+    )
+    df["year"] = df["normalized_first_registration"].apply(extract_year)
     df["year_group"] = df["year"].apply(year_group)
+    df["transmission_group"] = df["transmission"].apply(
+        lambda value: normalize_transmission(value).value
+        if pd.notna(value)
+        else TransmissionType.UNKNOWN.value
+    )
+
+    df["price_quality"] = df["price"].apply(classify_price)
+    df["mileage_quality"] = df["mileage_km"].apply(classify_mileage)
+    df["registration_quality"] = df["normalized_first_registration"].apply(
+        classify_first_registration
+    )
+    df["price_for_stats"] = df["price"].where(
+        df["price_quality"] == DataQuality.VALID.value
+    )
+    df["mileage_for_stats"] = df["mileage_km"].where(
+        df["mileage_quality"] == DataQuality.VALID.value
+    )
+
+    valid_group = (
+        (df["registration_quality"] == DataQuality.VALID.value)
+        & (df["transmission_group"] != TransmissionType.UNKNOWN.value)
+    )
 
     group_stats = (
-    df.groupby(["year_group", "transmission"])
-    .agg(
-        group_median_price=("price", "median"),
-        group_median_km=("mileage_km", "median"),
-        group_count=("listing_id", "count"),
-    )
-    .reset_index()
+        df.loc[valid_group]
+        .groupby(["year_group", "transmission_group"])
+        .agg(
+            group_median_price=("price_for_stats", "median"),
+            group_median_km=("mileage_for_stats", "median"),
+            group_count=("listing_id", "count"),
+            group_valid_price_count=("price_for_stats", "count"),
+            group_valid_km_count=("mileage_for_stats", "count"),
+        )
+        .reset_index()
     )
 
     df = df.merge(
         group_stats,
-        on=["year_group", "transmission"],
+        on=["year_group", "transmission_group"],
         how="left",
     )
 
@@ -148,18 +166,42 @@ def add_deal_scores(df: pd.DataFrame) -> pd.DataFrame:
 
     df = add_time_view_scores(df)
 
-    df["deal_score"] = (
-    0.55 * df["price_score"] +
-    0.25 * df["km_score"] +
-    0.15 * df["freshness_score"] +
-    0.05 * df["low_view_score"]
+    deal_score = (
+        0.55 * df["price_score"]
+        + 0.25 * df["km_score"]
+        + 0.15 * df["freshness_score"]
+        + 0.05 * df["low_view_score"]
     )
 
-    df["hot_listing_score"] = (
+    hot_listing_score = (
         0.40 * df["freshness_score"] +
         0.40 * df["hot_view_score"] +
         0.20 * df["price_score"]
     )
+
+    valid_core = (
+        (df["price_quality"] == DataQuality.VALID.value)
+        & (df["mileage_quality"] == DataQuality.VALID.value)
+        & (df["registration_quality"] == DataQuality.VALID.value)
+        & (df["transmission_group"] != TransmissionType.UNKNOWN.value)
+    )
+    sufficient_comparables = (
+        (df["group_valid_price_count"] >= MIN_COMPARABLE_VALUES)
+        & (df["group_valid_km_count"] >= MIN_COMPARABLE_VALUES)
+    )
+    complete_signals = (
+        df[["freshness_score", "low_view_score", "hot_view_score"]]
+        .notna()
+        .all(axis=1)
+    )
+    scorable = valid_core & sufficient_comparables & complete_signals
+
+    df["score_status"] = "SCORABLE"
+    df.loc[~complete_signals, "score_status"] = "MISSING_RANKING_SIGNALS"
+    df.loc[~sufficient_comparables, "score_status"] = "INSUFFICIENT_COMPARABLES"
+    df.loc[~valid_core, "score_status"] = "INVALID_OR_MISSING_CORE_DATA"
+    df["deal_score"] = deal_score.where(scorable)
+    df["hot_listing_score"] = hot_listing_score.where(scorable)
 
     df = df.sort_values("deal_score", ascending=False)
     return df
@@ -191,6 +233,7 @@ def main():
     "hot_view_score",
     "deal_score",
     "hot_listing_score",
+    "score_status",
     ]
 
     #print("\nTOP DEAL CANDIDATES")
@@ -199,8 +242,8 @@ def main():
     #scored.to_csv(output_path, index=False)
 
     scored.sort_values("deal_score", ascending=False).to_csv(
-    "data/top_deals.csv",
-    index=False,
+        "data/top_deals.csv",
+        index=False,
     )
 
     scored.sort_values("hot_listing_score", ascending=False).to_csv(
@@ -210,7 +253,6 @@ def main():
 
     print("Saved data/top_deals.csv")
     print("Saved data/hot_listings.csv")
-    
 
 
 if __name__ == "__main__":

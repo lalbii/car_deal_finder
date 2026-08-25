@@ -1,26 +1,32 @@
 from playwright.sync_api import Page
-from config.settings import SEARCH_CONFIG
+from models.search_config import SearchConfig
 from parsers.search_parser import parse_search_page
 
-def build_search_url(page_num: int) -> str:
-    region = SEARCH_CONFIG["region"]
-    query = SEARCH_CONFIG["query"]
-    category = SEARCH_CONFIG["category"]
+def build_search_url(search_config: SearchConfig, page_num: int) -> str:
+    region = search_config.region
+    query = search_config.query
+    category = search_config.category
 
     if page_num == 1:
-        return f"https://www.kleinanzeigen.de/s-autos/{region}/sortierung:neuste/{query}/{category}"
+        return (
+            f"https://www.kleinanzeigen.de/s-autos/{region}/"
+            f"sortierung:neuste/{query}/{category}"
+        )
 
-    return f"https://www.kleinanzeigen.de/s-autos/{region}/sortierung:neuste/seite:{page_num}/{query}/{category}"
+    return (
+        f"https://www.kleinanzeigen.de/s-autos/{region}/"
+        f"sortierung:neuste/seite:{page_num}/{query}/{category}"
+    )
 
 
-def discover_max_pages(page):
+def discover_max_pages(page: Page, search_config: SearchConfig) -> int:
     low = 1
     high = 100
 
     while low < high:
         mid = (low + high + 1) // 2
 
-        html = fetch_search_page(page, mid)
+        html = fetch_search_page(page, search_config, mid)
         listings = parse_search_page(html)
 
         if len(listings) > 0:
@@ -31,8 +37,10 @@ def discover_max_pages(page):
     return low
 
 
-def fetch_search_page(page: Page, page_num: int) -> str:
-    url = build_search_url(page_num)
+def fetch_search_page(
+    page: Page, search_config: SearchConfig, page_num: int
+) -> str:
+    url = build_search_url(search_config, page_num)
 
     print(f"Opening search page {page_num}: {url}")
 

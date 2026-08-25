@@ -1,0 +1,7 @@
+searches:
+  bmw_320d_nrw:
+    enabled: true
+    query: "bmw-320d"
+    region: "nordrhein-westfalen"
+    category: "k0c216l928"
+    max_pages: 20

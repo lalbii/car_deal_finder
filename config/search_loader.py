@@ -63,6 +63,7 @@ def load_runtime_config(path: str | Path = DEFAULT_SEARCH_CONFIG_PATH) -> Runtim
 
     allowed_fields = {
         "headless",
+        "browser_channel",
         "navigation_timeout_seconds",
         "page_settle_delay_seconds",
         "detail_delay_seconds",

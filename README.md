@@ -4,7 +4,7 @@ A single-user vehicle market-data collector for saved Kleinanzeigen Germany
 searches. It scrapes listings, preserves current and historical observations in
 SQLite, and produces exploratory ranking CSVs for manual review.
 
-## Local or Linux server setup
+## Python environment
 
 Python 3.10 or newer is required.
 
@@ -12,24 +12,51 @@ Python 3.10 or newer is required.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+```
+
+For local development with Playwright-managed Chromium, leave
+`runtime.browser_channel` unset (or set it to `null`) and install the bundled
+browser separately:
+
+```bash
 playwright install chromium
 ```
 
-On a typical Ubuntu or Debian server, Playwright can install Chromium and its
-required operating-system packages together:
+## VPS setup with system Google Chrome
+
+On this VPS, the scraper uses system-installed Google Chrome because downloads
+of Playwright's bundled Chromium are blocked. On Debian or Ubuntu, install
+Chrome from Google's package repository:
 
 ```bash
-playwright install --with-deps chromium
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg
+curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+  | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+  | sudo tee /etc/apt/sources.list.d/google-chrome.list
+sudo apt-get update
+sudo apt-get install -y google-chrome-stable
 ```
 
-The default runtime configuration launches Chromium headlessly, so no desktop
-session is required.
+Then select that browser channel in `config/searches.yaml`:
+
+```yaml
+runtime:
+  headless: true
+  browser_channel: "chrome"
+```
+
+Do not run `playwright install chromium` as part of this VPS setup. Omitting
+`browser_channel`, or setting it to `null` or an empty string, preserves the
+Playwright-managed Chromium behavior for other environments.
 
 ## Configuration
 
 Saved searches and shared runtime settings live in `config/searches.yaml`.
-Runtime settings control headless mode, navigation timeout, page-settle delay,
-polite detail-request delay, and bounded retry/backoff behavior.
+Runtime settings control headless mode, the optional browser channel,
+navigation timeout, page-settle delay, polite detail-request delay, and bounded
+retry/backoff behavior.
 
 ## Run the scraper
 

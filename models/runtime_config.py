@@ -6,6 +6,7 @@ class RuntimeConfig:
     """Small set of operational controls shared by scraper commands."""
 
     headless: bool = True
+    browser_channel: str | None = None
     navigation_timeout_seconds: float = 30.0
     page_settle_delay_seconds: float = 3.0
     detail_delay_seconds: float = 1.0
@@ -15,6 +16,16 @@ class RuntimeConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.headless, bool):
             raise ValueError("Runtime configuration 'headless' must be true or false")
+        if self.browser_channel is not None:
+            if not isinstance(self.browser_channel, str):
+                raise ValueError(
+                    "Runtime configuration 'browser_channel' must be a string or null"
+                )
+            object.__setattr__(
+                self,
+                "browser_channel",
+                self.browser_channel.strip() or None,
+            )
 
         self._validate_positive("navigation_timeout_seconds")
         self._validate_non_negative("page_settle_delay_seconds")

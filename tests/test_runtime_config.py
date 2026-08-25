@@ -28,13 +28,44 @@ runtime:
         )
         return path
 
-    def test_headless_runtime_loads_and_controls_browser_launch(self):
-        config = load_runtime_config(self.write_config("  headless: true\n"))
+    def test_browser_channel_loads_and_controls_browser_launch(self):
+        config = load_runtime_config(
+            self.write_config("  headless: true\n  browser_channel: chrome\n")
+        )
         playwright = Mock()
 
         launch_browser(playwright, config)
 
-        playwright.chromium.launch.assert_called_once_with(headless=True)
+        playwright.chromium.launch.assert_called_once_with(
+            headless=True,
+            channel="chrome",
+        )
+
+    def test_no_browser_channel_uses_playwright_managed_chromium(self):
+        config = load_runtime_config(self.write_config("  headless: false\n"))
+        playwright = Mock()
+
+        launch_browser(playwright, config)
+
+        self.assertIsNone(config.browser_channel)
+        playwright.chromium.launch.assert_called_once_with(headless=False)
+
+    def test_null_or_empty_browser_channel_uses_playwright_managed_chromium(self):
+        for value in ("null", '"   "'):
+            with self.subTest(value=value):
+                config = load_runtime_config(
+                    self.write_config(f"  browser_channel: {value}\n")
+                )
+                playwright = Mock()
+
+                launch_browser(playwright, config)
+
+                self.assertIsNone(config.browser_channel)
+                playwright.chromium.launch.assert_called_once_with(headless=True)
+
+    def test_browser_channel_rejects_non_string_values(self):
+        with self.assertRaisesRegex(ValueError, "must be a string or null"):
+            load_runtime_config(self.write_config("  browser_channel: 123\n"))
 
     def test_navigation_timeout_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "greater than zero"):

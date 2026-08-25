@@ -1,10 +1,34 @@
+from enum import Enum
 from urllib.parse import urljoin
+
 from bs4 import BeautifulSoup
 
 from config.settings import BASE_URL, BAD_TITLE_KEYWORDS
 from models.listing import SearchListing
 from normalization.vehicle_fields import normalize_price
+from operations.logging_config import get_logger
 from utils.text import clean_text
+
+
+logger = get_logger("search_parser")
+
+
+class SearchPageState(str, Enum):
+    VALID = "VALID"
+    EMPTY = "EMPTY"
+    UNEXPECTED = "UNEXPECTED"
+
+
+def classify_search_page(html: str) -> SearchPageState:
+    soup = BeautifulSoup(html, "lxml")
+    if soup.select("article.aditem") or soup.select("article[data-adid]"):
+        return SearchPageState.VALID
+
+    page_text = soup.get_text(" ", strip=True).casefold()
+    empty_markers = ("keine anzeigen gefunden", "keine ergebnisse gefunden")
+    if any(marker in page_text for marker in empty_markers):
+        return SearchPageState.EMPTY
+    return SearchPageState.UNEXPECTED
 
 
 def parse_search_page(html: str) -> list[SearchListing]:
@@ -79,7 +103,7 @@ def parse_search_page(html: str) -> list[SearchListing]:
         )
 
     page_title = clean_text(soup.title.get_text(" ", strip=True)) if soup.title else None
-    print(
+    logger.debug(
         "Search parser debug: "
         f"html_chars={len(html)}, "
         f"page_title={page_title!r}, "

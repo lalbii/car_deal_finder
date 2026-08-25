@@ -1,13 +1,11 @@
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 
-
-DB_PATH = Path("data/listings.db")
+from config.paths import DB_PATH
 
 
 def get_connection():
-    DB_PATH.parent.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
 
 def insert_listing_history(row: dict):

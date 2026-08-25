@@ -1,6 +1,9 @@
 import argparse
 
-from config.search_loader import load_search_configs, select_search_config
+from config.search_loader import load_application_config, select_search_config
+from operations.logging_config import configure_logging
+from operations.process_lock import LockUnavailableError, ProcessLock
+from operations.signals import ShutdownRequested, graceful_shutdown_signals
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,12 +17,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
-        configs = load_search_configs()
+        configs, runtime_config = load_application_config()
         if args.list_searches:
             for config in configs.values():
                 state = "enabled" if config.enabled else "disabled"
@@ -27,7 +30,7 @@ def main() -> None:
                     f"{config.name} ({state}) - query={config.query}, "
                     f"region={config.region}, max_pages={config.max_pages}"
                 )
-            return
+            return 0
 
         search_config = select_search_config(configs, args.search)
     except ValueError as exc:
@@ -35,8 +38,21 @@ def main() -> None:
 
     from scrapers.kleinanzeigen_scraper import run
 
-    run(search_config)
+    logger = configure_logging()
+    try:
+        with ProcessLock(), graceful_shutdown_signals():
+            run(search_config, runtime_config, logger=logger)
+    except LockUnavailableError as exc:
+        logger.error("scrape_not_started=true reason=%s", exc)
+        return 1
+    except ShutdownRequested as exc:
+        logger.warning("shutdown_requested=true signal=%s", exc)
+        return 130
+    except Exception:
+        logger.exception("fatal_scrape_failure=true search=%s", search_config.name)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

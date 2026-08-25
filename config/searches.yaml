@@ -5,3 +5,11 @@ searches:
     region: "nordrhein-westfalen"
     category: "k0c216l928"
     max_pages: 20
+
+runtime:
+  headless: true
+  navigation_timeout_seconds: 30
+  page_settle_delay_seconds: 3
+  detail_delay_seconds: 1
+  max_retries: 2
+  retry_base_delay_seconds: 2

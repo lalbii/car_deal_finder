@@ -2,6 +2,7 @@ import sqlite3
 import re
 import pandas as pd
 
+from config.paths import DATA_DIR, DB_PATH
 from models.listing import TransmissionType
 from normalization.vehicle_fields import (
     normalize_first_registration,
@@ -14,7 +15,6 @@ from validation.listing_quality import (
     classify_price,
 )
 
-DB_PATH = "data/listings.db"
 MIN_COMPARABLE_VALUES = 3
 
 
@@ -242,12 +242,12 @@ def main():
     #scored.to_csv(output_path, index=False)
 
     scored.sort_values("deal_score", ascending=False).to_csv(
-        "data/top_deals.csv",
+        DATA_DIR / "top_deals.csv",
         index=False,
     )
 
     scored.sort_values("hot_listing_score", ascending=False).to_csv(
-        "data/hot_listings.csv",
+        DATA_DIR / "hot_listings.csv",
         index=False,
     )
 

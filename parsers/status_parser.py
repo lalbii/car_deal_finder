@@ -1,7 +1,11 @@
 from enum import Enum
 
 from bs4 import BeautifulSoup
+from operations.logging_config import get_logger
 from utils.text import clean_text
+
+
+logger = get_logger("status_parser")
 
 INACTIVE_KEYWORDS = [
     "gelöscht",
@@ -36,12 +40,12 @@ def is_listing_active(html: str) -> bool:
 
     for keyword in INACTIVE_KEYWORDS:
         if keyword in title:
-            print(f"inactive word in title: {keyword}")
+            logger.debug("inactive_keyword=%s location=title", keyword)
             return False
 
     for keyword in INACTIVE_KEYWORDS:
         if keyword in page_text:
-            print(f"inactive word in text: {keyword}")
+            logger.debug("inactive_keyword=%s location=page_text", keyword)
             return False
 
     return True
@@ -59,4 +63,10 @@ def interpret_listing_status(html: str, http_status: int | None) -> ListingStatu
         return ListingStatus.UNKNOWN
     if not html:
         return ListingStatus.UNKNOWN
-    return ListingStatus.ACTIVE if is_listing_active(html) else ListingStatus.INACTIVE
+    if not is_listing_active(html):
+        return ListingStatus.INACTIVE
+
+    soup = BeautifulSoup(html, "lxml")
+    title_el = soup.select_one("h1")
+    title = clean_text(title_el.get_text(" ", strip=True)) if title_el else None
+    return ListingStatus.ACTIVE if title else ListingStatus.UNKNOWN

@@ -5,3 +5,5 @@ data/*.db
 .ipynb_checkpoints/
 data/*.csv
 data/*.html
+logs/
+.car_deal_finder.lock

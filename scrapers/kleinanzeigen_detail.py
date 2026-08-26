@@ -5,6 +5,7 @@ from collections.abc import Callable
 from playwright.sync_api import Page
 
 from models.runtime_config import RuntimeConfig
+from scrapers.circuit_breaker import BlockingCircuitBreaker
 from scrapers.failures import FetchResult
 from scrapers.fetching import navigate_with_retry
 
@@ -18,6 +19,7 @@ def fetch_detail_page(
     listing_id: str | None = None,
     search_name: str | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    circuit_breaker: BlockingCircuitBreaker | None = None,
 ) -> FetchResult:
     context = {"listing_id": listing_id or "unknown"}
     if search_name:
@@ -29,4 +31,5 @@ def fetch_detail_page(
         logger=logger,
         context=context,
         sleep=sleep,
+        circuit_breaker=circuit_breaker,
     )

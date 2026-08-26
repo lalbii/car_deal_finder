@@ -69,6 +69,9 @@ def load_runtime_config(path: str | Path = DEFAULT_SEARCH_CONFIG_PATH) -> Runtim
         "detail_delay_seconds",
         "max_retries",
         "retry_base_delay_seconds",
+        "detail_refresh_interval_hours",
+        "inactive_check_interval_hours",
+        "blocking_failure_threshold",
     }
     unknown_fields = set(raw_runtime) - allowed_fields
     if unknown_fields:

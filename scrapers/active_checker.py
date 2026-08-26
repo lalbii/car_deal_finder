@@ -67,7 +67,7 @@ def run_active_check(
                         continue
 
                     try:
-                        listing_status = interpret_listing_status(
+                        status_decision = interpret_listing_status(
                             fetch.html, fetch.status_code
                         )
                     except Exception as exc:
@@ -82,21 +82,23 @@ def run_active_check(
                         )
                         continue
 
-                    if listing_status == ListingStatus.INACTIVE:
+                    if status_decision.status == ListingStatus.INACTIVE:
                         mark_listing_inactive(listing_id)
                         summary.inactive += 1
-                    elif listing_status == ListingStatus.ACTIVE:
+                    elif status_decision.status == ListingStatus.ACTIVE:
                         mark_listing_checked(listing_id)
                         summary.active += 1
                     else:
                         summary.unknown += 1
 
                     logger.info(
-                        "listing_id=%s progress=%s/%s status=%s",
+                        "listing_id=%s progress=%s/%s status=%s reason=%s marker=%r",
                         listing_id,
                         index,
                         len(active_listings),
-                        listing_status.value,
+                        status_decision.status.value,
+                        status_decision.reason,
+                        status_decision.marker,
                     )
                 finally:
                     if index < len(active_listings) and runtime_config.detail_delay_seconds:

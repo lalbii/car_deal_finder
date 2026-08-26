@@ -265,7 +265,7 @@ def run(
                         continue
 
                     try:
-                        listing_status = interpret_listing_status(
+                        status_decision = interpret_listing_status(
                             fetch.html, fetch.status_code
                         )
                     except Exception as exc:
@@ -279,22 +279,27 @@ def run(
                         )
                         continue
 
-                    if listing_status == ListingStatus.INACTIVE:
+                    if status_decision.status == ListingStatus.INACTIVE:
                         if listing.listing_id:
                             mark_listing_inactive(listing.listing_id)
                         summary.confirmed_inactive += 1
                         logger.info(
-                            "search=%s listing_id=%s status=INACTIVE",
+                            "search=%s listing_id=%s status=INACTIVE reason=%s marker=%r",
                             search_config.name,
                             listing.listing_id,
+                            status_decision.reason,
+                            status_decision.marker,
                         )
                         continue
-                    if listing_status == ListingStatus.UNKNOWN:
+                    if status_decision.status == ListingStatus.UNKNOWN:
                         summary.add_failure(FailureCategory.UNEXPECTED_PAGE.value)
                         logger.warning(
-                            "search=%s listing_id=%s status=UNKNOWN database_unchanged=true",
+                            "search=%s listing_id=%s status=UNKNOWN reason=%s marker=%r "
+                            "database_unchanged=true",
                             search_config.name,
                             listing.listing_id,
+                            status_decision.reason,
+                            status_decision.marker,
                         )
                         continue
 

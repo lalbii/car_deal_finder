@@ -358,3 +358,25 @@ The test suite is fully offline:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+NOW
+ ↓
+1. Eligibility / risk flags
+ ↓
+2. Comparable Engine v2
+ ↓
+3. Estimated Market Price
+ ↓
+4. Margin + Discount + Opportunity
+ ↓
+5. Score snapshots/versioning
+ ↓
+6. Survival tracking/backtest
+ ↓
+7. Liquidity
+ ↓
+8. Urgency
+ ↓
+9. Dashboard v2
+ ↓
+10. ML calibration

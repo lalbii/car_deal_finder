@@ -1,0 +1,15 @@
+[Unit]
+Description=Kleinanzeigen vehicle deal finder scrape run
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/car_deal_finder
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/car_deal_finder/.venv/bin/python /opt/car_deal_finder/main.py --search bmw_320d_nrw
+TimeoutStartSec=2h
+Restart=no
+StandardOutput=journal
+StandardError=journal

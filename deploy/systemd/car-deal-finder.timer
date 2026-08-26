@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Kleinanzeigen vehicle deal finder hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=car-deal-finder.service
+
+[Install]
+WantedBy=timers.target

@@ -9,6 +9,7 @@ from models.runtime_config import RuntimeConfig
 from operations.logging_config import get_logger
 from parsers.status_parser import ListingStatus, interpret_listing_status
 from scrapers.browser import launch_browser
+from scrapers.circuit_breaker import BlockingCircuitBreaker, CircuitOpenError
 from scrapers.failures import FailureCategory, FetchFailure
 from scrapers.kleinanzeigen_detail import fetch_detail_page
 from storage.sqlite import (
@@ -28,6 +29,7 @@ def run_active_check(
     logger = logger or get_logger("active_checker")
     active_listings = get_active_listings(limit=limit)
     summary = ActiveCheckSummary(requested=len(active_listings))
+    breaker = BlockingCircuitBreaker(runtime_config.blocking_failure_threshold)
     logger.info("active_check_start=true listings=%s limit=%s", len(active_listings), limit)
     if not active_listings:
         logger.info("%s", summary.format())
@@ -42,6 +44,9 @@ def run_active_check(
             for index, listing in enumerate(active_listings, start=1):
                 listing_id = listing["listing_id"]
                 url = listing["url"]
+                if index > 1 and runtime_config.detail_delay_seconds:
+                    sleep(runtime_config.detail_delay_seconds)
+                summary.status_requests += 1
                 try:
                     try:
                         fetch = fetch_detail_page(
@@ -51,9 +56,27 @@ def run_active_check(
                             logger=logger,
                             listing_id=listing_id,
                             sleep=sleep,
+                            circuit_breaker=breaker,
                         )
+                        summary.retry_requests += max(0, fetch.attempts - 1)
+                    except CircuitOpenError as error:
+                        failure = error.failure
+                        summary.unknown += 1
+                        summary.retry_requests += max(0, failure.attempts - 1)
+                        summary.add_failure(failure.category.value)
+                        summary.blocking_failures = breaker.blocking_failures
+                        summary.stopped_reason = "BLOCKING_SUSPECTED"
+                        logger.error(
+                            "circuit_breaker=OPEN blocking_failures=%s threshold=%s "
+                            "stopped_reason=%s",
+                            breaker.blocking_failures,
+                            breaker.threshold,
+                            summary.stopped_reason,
+                        )
+                        break
                     except FetchFailure as failure:
                         summary.unknown += 1
+                        summary.retry_requests += max(0, failure.attempts - 1)
                         summary.add_failure(failure.category.value)
                         logger.warning(
                             "listing_id=%s url=%s status=UNKNOWN failure=%s "
@@ -101,8 +124,7 @@ def run_active_check(
                         status_decision.marker,
                     )
                 finally:
-                    if index < len(active_listings) and runtime_config.detail_delay_seconds:
-                        sleep(runtime_config.detail_delay_seconds)
+                    summary.blocking_failures = breaker.blocking_failures
         finally:
             browser.close()
 

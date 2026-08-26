@@ -8,6 +8,7 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from models.runtime_config import RuntimeConfig
+from scrapers.circuit_breaker import BlockingCircuitBreaker, CircuitOpenError
 from scrapers.failures import FailureCategory, FetchFailure, FetchResult
 
 
@@ -19,7 +20,11 @@ ANTI_BOT_MARKERS = (
     "ungewöhnliche aktivität",
     "verify you are human",
 )
-TRANSIENT_CLIENT_STATUSES = {408, 425, 429}
+IP_BLOCK_MARKERS = (
+    "ip-bereich vorübergehend gesperrt",
+    "ip-bereich gesperrt",
+)
+TRANSIENT_CLIENT_STATUSES = {408, 425}
 INACTIVE_STATUSES = {404, 410}
 INTERSTITIAL_TITLE_MARKERS = (
     "consent",
@@ -35,6 +40,11 @@ def detect_anti_bot_page(html: str) -> bool:
     return any(marker in text for marker in ANTI_BOT_MARKERS)
 
 
+def detect_ip_blocked_page(html: str) -> bool:
+    text = html.casefold()
+    return any(marker in text for marker in IP_BLOCK_MARKERS)
+
+
 def detect_interstitial_page(html: str) -> bool:
     title_match = re.search(
         r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL
@@ -43,6 +53,16 @@ def detect_interstitial_page(html: str) -> bool:
         return False
     title = re.sub(r"\s+", " ", title_match.group(1)).casefold()
     return any(marker in title for marker in INTERSTITIAL_TITLE_MARKERS)
+
+
+def detect_challenge_page(html: str) -> bool:
+    title_match = re.search(
+        r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL
+    )
+    if not title_match:
+        return False
+    title = re.sub(r"\s+", " ", title_match.group(1)).casefold()
+    return "challenge" in title
 
 
 def _context_text(context: dict[str, object] | None) -> str:
@@ -74,10 +94,13 @@ def navigate_with_retry(
     logger: logging.Logger,
     context: dict[str, object] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    circuit_breaker: BlockingCircuitBreaker | None = None,
 ) -> FetchResult:
     prefix = _context_text(context)
 
     for attempt in range(1, runtime_config.max_attempts + 1):
+        if circuit_breaker:
+            circuit_breaker.ensure_closed()
         failure: FetchFailure | None = None
         try:
             response = page.goto(
@@ -94,12 +117,21 @@ def navigate_with_retry(
 
             status_code = response.status
             if status_code in INACTIVE_STATUSES:
+                if circuit_breaker:
+                    circuit_breaker.record_success()
                 return FetchResult(page.content(), status_code, attempt)
             if status_code == 403:
                 raise FetchFailure(
                     FailureCategory.ANTI_BOT_SUSPECTED,
                     "HTTP 403 may indicate blocking",
                     retryable=False,
+                    status_code=status_code,
+                )
+            if status_code == 429:
+                raise FetchFailure(
+                    FailureCategory.RATE_LIMITED,
+                    "HTTP 429 rate limit response",
+                    retryable=True,
                     status_code=status_code,
                 )
             if status_code in TRANSIENT_CLIENT_STATUSES:
@@ -134,10 +166,24 @@ def navigate_with_retry(
                     retryable=False,
                     status_code=status_code,
                 )
+            if detect_ip_blocked_page(html):
+                raise FetchFailure(
+                    FailureCategory.IP_BLOCKED,
+                    "IP range is temporarily blocked",
+                    retryable=False,
+                    status_code=status_code,
+                )
             if detect_anti_bot_page(html):
                 raise FetchFailure(
                     FailureCategory.ANTI_BOT_SUSPECTED,
                     "challenge or anti-bot content detected",
+                    retryable=False,
+                    status_code=status_code,
+                )
+            if detect_challenge_page(html):
+                raise FetchFailure(
+                    FailureCategory.ANTI_BOT_SUSPECTED,
+                    "challenge page detected",
                     retryable=False,
                     status_code=status_code,
                 )
@@ -156,6 +202,8 @@ def navigate_with_retry(
                     attempt,
                     runtime_config.max_attempts,
                 )
+            if circuit_breaker:
+                circuit_breaker.record_success()
             return FetchResult(html, status_code, attempt)
         except PlaywrightTimeoutError as exc:
             failure = FetchFailure(
@@ -173,6 +221,10 @@ def navigate_with_retry(
                 str(exc) or exc.__class__.__name__,
                 retryable=False,
             )
+
+        failure.attempts = attempt
+        if circuit_breaker and circuit_breaker.record_failure(failure):
+            raise CircuitOpenError(failure)
 
         if not failure.retryable or attempt >= runtime_config.max_attempts:
             raise failure

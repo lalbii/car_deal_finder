@@ -1,5 +1,6 @@
 import sqlite3
-from datetime import datetime
+from collections.abc import Iterable
+from datetime import datetime, timezone
 
 from config.paths import DB_PATH
 
@@ -8,8 +9,16 @@ def get_connection():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
 
+
+def _timestamp(now: datetime | None = None) -> str:
+    value = now or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        raise ValueError("Database timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc).isoformat()
+
+
 def insert_listing_history(row: dict):
-    now = datetime.now().isoformat()
+    observed_at = row.get("scraped_at") or _timestamp()
 
     with get_connection() as conn:
         conn.execute("""
@@ -23,7 +32,7 @@ def insert_listing_history(row: dict):
             row.get("mileage_km"),
             int(bool(row.get("is_active"))),
             row.get("view_count"),
-            now,
+            observed_at,
         ))
         conn.commit()
 
@@ -66,7 +75,7 @@ def init_db():
 
 
 def upsert_listing(row: dict):
-    now = datetime.now().isoformat()
+    now = row.get("scraped_at") or _timestamp()
 
     with get_connection() as conn:
         conn.execute("""
@@ -86,6 +95,7 @@ def upsert_listing(row: dict):
             location=excluded.location,
             url=excluded.url,
             is_active=excluded.is_active,
+            inactive_at=NULL,
             last_seen=excluded.last_seen,
             posted_date=excluded.posted_date,
             view_count=excluded.view_count,
@@ -108,6 +118,52 @@ def upsert_listing(row: dict):
             now,
         ))
         conn.commit()
+
+
+def get_known_listings() -> list[dict]:
+    query = """
+    SELECT
+        listings.*,
+        detail_history.last_detail_at
+    FROM listings
+    LEFT JOIN (
+        SELECT listing_id, MAX(scraped_at) AS last_detail_at
+        FROM listing_history
+        GROUP BY listing_id
+    ) AS detail_history
+        ON detail_history.listing_id = listings.listing_id
+    """
+
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def mark_listings_seen(
+    listing_ids: Iterable[str],
+    *,
+    seen_at: datetime | None = None,
+) -> int:
+    unique_ids = sorted(set(listing_ids))
+    if not unique_ids:
+        return 0
+
+    timestamp = _timestamp(seen_at)
+    with get_connection() as conn:
+        before = conn.total_changes
+        conn.executemany(
+            """
+            UPDATE listings
+            SET last_seen = ?, is_active = 1, inactive_at = NULL
+            WHERE listing_id = ?
+            """,
+            [(timestamp, listing_id) for listing_id in unique_ids],
+        )
+        updated = conn.total_changes - before
+        conn.commit()
+    return updated
 
 def get_active_listings(limit: int | None = None) -> list[dict]:
     query = """
@@ -140,8 +196,8 @@ def get_active_listings(limit: int | None = None) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def mark_listing_checked(listing_id: str):
-    now = datetime.now().isoformat()
+def mark_listing_checked(listing_id: str, *, checked_at: datetime | None = None):
+    now = _timestamp(checked_at)
 
     with get_connection() as conn:
         conn.execute("""
@@ -152,8 +208,8 @@ def mark_listing_checked(listing_id: str):
         conn.commit()
 
 
-def mark_listing_inactive(listing_id: str):
-    now = datetime.now().isoformat()
+def mark_listing_inactive(listing_id: str, *, checked_at: datetime | None = None):
+    now = _timestamp(checked_at)
 
     with get_connection() as conn:
         conn.execute("""

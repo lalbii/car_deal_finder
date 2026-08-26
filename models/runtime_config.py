@@ -12,6 +12,9 @@ class RuntimeConfig:
     detail_delay_seconds: float = 1.0
     max_retries: int = 2
     retry_base_delay_seconds: float = 2.0
+    detail_refresh_interval_hours: float = 6.0
+    inactive_check_interval_hours: float = 24.0
+    blocking_failure_threshold: int = 3
 
     def __post_init__(self) -> None:
         if not isinstance(self.headless, bool):
@@ -31,11 +34,23 @@ class RuntimeConfig:
         self._validate_non_negative("page_settle_delay_seconds")
         self._validate_non_negative("detail_delay_seconds")
         self._validate_non_negative("retry_base_delay_seconds")
+        self._validate_positive("detail_refresh_interval_hours")
+        self._validate_positive("inactive_check_interval_hours")
 
         if isinstance(self.max_retries, bool) or not isinstance(self.max_retries, int):
             raise ValueError("Runtime configuration 'max_retries' must be an integer")
         if not 0 <= self.max_retries <= 10:
             raise ValueError("Runtime configuration 'max_retries' must be between 0 and 10")
+        if isinstance(self.blocking_failure_threshold, bool) or not isinstance(
+            self.blocking_failure_threshold, int
+        ):
+            raise ValueError(
+                "Runtime configuration 'blocking_failure_threshold' must be an integer"
+            )
+        if not 1 <= self.blocking_failure_threshold <= 10:
+            raise ValueError(
+                "Runtime configuration 'blocking_failure_threshold' must be between 1 and 10"
+            )
 
     def _validate_positive(self, field_name: str) -> None:
         value = getattr(self, field_name)

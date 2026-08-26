@@ -4,6 +4,7 @@ import unittest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from models.runtime_config import RuntimeConfig
+from scrapers.circuit_breaker import BlockingCircuitBreaker, CircuitOpenError
 from scrapers.failures import FailureCategory, FetchFailure
 from scrapers.fetching import navigate_with_retry
 
@@ -144,6 +145,44 @@ class FetchRetryTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.category, FailureCategory.UNKNOWN_ERROR)
+
+    def test_ip_block_page_is_explicitly_classified(self):
+        page = FakePage(
+            [200],
+            html="<html><h1>IP-Bereich vorübergehend gesperrt.</h1></html>",
+        )
+
+        with self.assertRaises(FetchFailure) as raised:
+            navigate_with_retry(
+                page,
+                "https://example.test/listing",
+                self.runtime,
+                logger=self.logger,
+                sleep=lambda delay: self.fail("IP block should not retry"),
+            )
+
+        self.assertEqual(raised.exception.category, FailureCategory.IP_BLOCKED)
+
+    def test_rate_limit_attempts_open_circuit_at_threshold(self):
+        page = FakePage([429, 429, 429])
+        breaker = BlockingCircuitBreaker(threshold=3)
+        sleeps = []
+
+        with self.assertRaises(CircuitOpenError) as raised:
+            navigate_with_retry(
+                page,
+                "https://example.test/listing",
+                self.runtime,
+                logger=self.logger,
+                sleep=sleeps.append,
+                circuit_breaker=breaker,
+            )
+
+        self.assertEqual(raised.exception.failure.category, FailureCategory.RATE_LIMITED)
+        self.assertEqual(raised.exception.failure.attempts, 3)
+        self.assertEqual(page.goto_calls, 3)
+        self.assertEqual(sleeps, [1, 2])
+        self.assertTrue(breaker.is_open)
 
 
 if __name__ == "__main__":

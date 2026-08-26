@@ -14,3 +14,6 @@ runtime:
   detail_delay_seconds: 5
   max_retries: 2
   retry_base_delay_seconds: 2
+  detail_refresh_interval_hours: 6
+  inactive_check_interval_hours: 24
+  blocking_failure_threshold: 3

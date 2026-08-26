@@ -79,6 +79,34 @@ runtime:
                 with self.assertRaisesRegex(ValueError, "between 0 and 10"):
                     RuntimeConfig(max_retries=retries)
 
+    def test_scheduling_and_blocking_settings_load(self):
+        config = load_runtime_config(
+            self.write_config(
+                "  detail_refresh_interval_hours: 6\n"
+                "  inactive_check_interval_hours: 24\n"
+                "  blocking_failure_threshold: 3\n"
+            )
+        )
+
+        self.assertEqual(config.detail_refresh_interval_hours, 6)
+        self.assertEqual(config.inactive_check_interval_hours, 24)
+        self.assertEqual(config.blocking_failure_threshold, 3)
+
+    def test_scheduling_intervals_must_be_positive(self):
+        for field in (
+            "detail_refresh_interval_hours",
+            "inactive_check_interval_hours",
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "greater than zero"):
+                    load_runtime_config(self.write_config(f"  {field}: 0\n"))
+
+    def test_blocking_threshold_is_bounded(self):
+        for threshold in (0, 11):
+            with self.subTest(threshold=threshold):
+                with self.assertRaisesRegex(ValueError, "between 1 and 10"):
+                    RuntimeConfig(blocking_failure_threshold=threshold)
+
 
 if __name__ == "__main__":
     unittest.main()

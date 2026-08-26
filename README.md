@@ -56,7 +56,30 @@ Playwright-managed Chromium behavior for other environments.
 Saved searches and shared runtime settings live in `config/searches.yaml`.
 Runtime settings control headless mode, the optional browser channel,
 navigation timeout, page-settle delay, polite detail-request delay, and bounded
-retry/backoff behavior.
+retry/backoff behavior. They also control conservative request scheduling:
+
+```yaml
+runtime:
+  detail_delay_seconds: 5
+  detail_refresh_interval_hours: 6
+  inactive_check_interval_hours: 24
+  blocking_failure_threshold: 3
+```
+
+New listings receive an immediate detail fetch. A known listing visible in the
+search results only receives another detail fetch when its latest persisted
+detail observation is at least six hours old. Search visibility updates
+`last_seen` without replacing detailed fields or creating a history row.
+
+Active listings missing from a complete search run are status-checked only when
+`last_checked_at` is at least 24 hours old. Missing from a search never marks a
+listing inactive by itself. If search coverage is incomplete, missing-listing
+status checks are deferred for that run.
+
+Three consecutive HTTP 403/rate-limit, anti-bot challenge, or IP-block signals
+open the run-level circuit breaker. A successful request or non-blocking failure
+resets the consecutive count. An open breaker stops further network requests,
+preserves completed writes, and is reported as `BLOCKING_SUSPECTED`.
 
 ## Run the scraper
 
@@ -69,6 +92,9 @@ python main.py --search bmw_320d_nrw
 All application paths are resolved from the project directory, not the current
 working directory. It is therefore safe to invoke `main.py` by absolute path
 from cron, systemd, or another directory.
+
+Each invocation represents one finite scrape run. Run frequency must be managed
+externally; the application does not contain a scheduler or infinite loop.
 
 ## Check known active listings
 

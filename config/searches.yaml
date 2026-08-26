@@ -11,6 +11,6 @@ runtime:
   browser_channel: "chrome"
   navigation_timeout_seconds: 30
   page_settle_delay_seconds: 3
-  detail_delay_seconds: 1
+  detail_delay_seconds: 5
   max_retries: 2
   retry_base_delay_seconds: 2

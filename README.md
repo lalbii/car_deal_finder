@@ -4,6 +4,97 @@ A single-user vehicle market-data collector for saved Kleinanzeigen Germany
 searches. It scrapes listings, preserves current and historical observations in
 SQLite, and produces exploratory ranking CSVs for manual review.
 
+# Runtime Architecture
+
+The application runs continuously on a small VPS.
+
+The scraper itself is not a long-running daemon. Instead, a systemd timer starts a one-shot scraper process once per hour.
+
+```text
+                 VPS
+                  │
+        ┌─────────┴─────────┐
+        │                   │
+        ▼                   ▼
+ systemd timer        Streamlit service
+   every hour              │
+        │                   │
+        ▼                   │
+car-deal-finder.service     │
+        │                   │
+        ▼                   │
+   Python scraper           │
+        │                   │
+        ▼                   │
+   Kleinanzeigen            │
+        │                   │
+        ▼                   │
+      SQLite ◄──────────────┘
+        │
+        ▼
+Historical listings,
+observations and analytics
+        │
+        ▼
+   User browser
+```
+
+## Scraper lifecycle
+
+The scheduled collection pipeline is:
+
+```text
+systemd timer
+    ↓
+car-deal-finder.service
+    ↓
+Python scraper
+    ↓
+Kleinanzeigen search pages
+    ↓
+new / stale listing selection
+    ↓
+detail or status requests
+    ↓
+normalize + validate
+    ↓
+SQLite persistence
+    ↓
+process exits
+```
+
+The systemd timer starts a new run once per hour. The application-level process lock prevents accidental overlapping scraper executions.
+
+## Dashboard lifecycle
+
+The dashboard runs separately as a persistent Streamlit service:
+
+```text
+Browser
+   ↓
+Streamlit dashboard
+   ↓
+read-only SQLite queries
+   ↓
+listings + history + analytics
+```
+
+The scraper writes market data to SQLite while the dashboard reads the same database.
+
+The first dashboard version is intended to remain read-only so it does not interfere with scraper state.
+
+## Operational model
+
+This design allows the system to continue operating when:
+
+* the developer laptop is turned off
+* no SSH connection is open
+* no tmux session exists
+* the VPS is rebooted
+
+After reboot, the persistent systemd timer is restored automatically and scheduled scraping resumes.
+
+
 ## Python environment
 
 Python 3.10 or newer is required.

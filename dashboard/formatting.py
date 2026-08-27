@@ -24,6 +24,20 @@ def format_percent(value: Any, decimals: int = 1) -> str:
     return f"{float(value):.{decimals}f}%"
 
 
+def format_signed_euro(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    amount = int(round(float(value)))
+    sign = "+" if amount > 0 else "-" if amount < 0 else ""
+    return f"{sign}€{abs(amount):,}".replace(",", ".")
+
+
+def format_signed_percent(value: Any, decimals: int = 1) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):+.{decimals}f}%"
+
+
 def format_score(value: Any) -> str:
     if value is None or pd.isna(value):
         return "—"

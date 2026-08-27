@@ -513,6 +513,13 @@ asking-market-gap-component combination. Both components use deterministic
 piecewise-linear mappings with gradual saturation; confidence and canonical
 eligibility-risk multipliers remain separate and explicit.
 
+Dashboard v2 builds its opportunity dataset through the canonical analytics
+pipeline and ranks valid Opportunity Score v2.1 results by default. The
+dashboard remains a read-only SQLite consumer; computed valuations and scores
+are cached in memory using persisted database freshness as part of the cache
+key and are not stored back to the database. Listing detail exposes the full
+valuation chain and the canonical comparables used by the estimator.
+
 The application is not expected to automatically purchase or contact sellers.
 
 ---

@@ -7,19 +7,24 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
+from analytics.comparables import find_comparables
+from analytics.market_value import estimate_market_value
+from analytics.opportunity import (
+    calculate_economic_opportunity,
+    calculate_opportunity_score,
+)
+from analytics.valuation_eligibility import evaluate_valuation_eligibility
+from analytics.vehicle_semantics import extract_vehicle_semantics
+from normalization.vehicle_fields import registration_year
+
 try:
     from config.paths import DB_PATH
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
     DB_PATH = PROJECT_ROOT / "data" / "listings.db"
 
-try:
-    from analytics.deal_score import add_deal_scores
-except ImportError:
-    add_deal_scores = None
-
-
 CACHE_TTL_SECONDS = 60
+OPPORTUNITY_CACHE_TTL_SECONDS = 3_600
 
 
 def _connect_read_only() -> sqlite3.Connection:
@@ -33,10 +38,37 @@ def _connect_read_only() -> sqlite3.Connection:
     return conn
 
 
+def dashboard_source_freshness(db_path: str | Path = DB_PATH) -> tuple:
+    """Return a cheap cache key tied to persisted dashboard source changes."""
+    path = Path(db_path).resolve()
+    stat = path.stat()
+    latest_run = None
+    latest_listing = None
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5) as conn:
+        conn.execute("PRAGMA query_only = ON")
+        try:
+            latest_run = conn.execute(
+                "SELECT MAX(finished_at) FROM scrape_runs WHERE succeeded = 1"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+        try:
+            latest_listing = conn.execute(
+                "SELECT MAX(last_seen) FROM listings"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+    return stat.st_mtime_ns, stat.st_size, latest_run, latest_listing
+
+
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
-def load_listings() -> pd.DataFrame:
+def _load_listings_cached(freshness: tuple) -> pd.DataFrame:
     with _connect_read_only() as conn:
         return pd.read_sql_query("SELECT * FROM listings", conn)
+
+
+def load_listings() -> pd.DataFrame:
+    return _load_listings_cached(dashboard_source_freshness())
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
@@ -129,31 +161,97 @@ def load_price_drop_summary() -> pd.DataFrame:
     return _derive_price_drop_summary(load_all_history_prices())
 
 
-@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
-def load_dashboard_frame(active_market_only: bool = True) -> pd.DataFrame:
-    listings = load_listings().copy()
-
+def build_opportunity_frame(
+    listings: pd.DataFrame,
+    active_market_only: bool = True,
+) -> pd.DataFrame:
+    """Build dashboard records exclusively through canonical analytics APIs."""
     if listings.empty:
-        return listings
+        return listings.copy()
 
+    listings = listings.copy()
     listings["listing_id"] = listings["listing_id"].astype(str)
-
     market = listings.copy()
     if active_market_only and "is_active" in market.columns:
         market = market.loc[market["is_active"] == 1].copy()
+    rows = []
+    for _, target in market.iterrows():
+        eligibility = evaluate_valuation_eligibility(target)
+        comparable = find_comparables(target, listings)
+        market_value = estimate_market_value(comparable)
+        economic = calculate_economic_opportunity(target.get("price"), market_value)
+        score = calculate_opportunity_score(economic, eligibility.status)
+        semantics = extract_vehicle_semantics(target.get("title"))
+        row = target.to_dict()
+        row.update(
+            {
+                "year": registration_year(target.get("first_registration")),
+                "body_style": semantics.body_style.value,
+                "eligibility_status": eligibility.status.value,
+                "risk_reasons": ", ".join(reason.value for reason in eligibility.reasons),
+                "market_value_status": market_value.status.value,
+                "estimated_market_price": market_value.estimated_market_price,
+                "valuation_confidence": market_value.confidence.value,
+                "comparable_count": market_value.comparable_count,
+                "market_gap_eur": economic.market_gap_eur,
+                "discount_percent": economic.discount_percent,
+                "economic_status": economic.status.value,
+                "opportunity_score": score.opportunity_score,
+                "score_version": score.score_version,
+                "score_status": score.status.value,
+                "discount_component": score.discount_component,
+                "margin_component": score.margin_component,
+                "base_opportunity": score.base_opportunity,
+                "confidence_multiplier": score.confidence_multiplier,
+                "risk_multiplier": score.risk_multiplier,
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
 
-    # Reuse the existing analytics function as the single scoring source of truth.
-    if add_deal_scores is not None and not market.empty:
-        scored_market = add_deal_scores(market.copy())
-    else:
-        scored_market = market.copy()
 
-    drops = load_price_drop_summary()
-    if not drops.empty:
-        drops["listing_id"] = drops["listing_id"].astype(str)
-        scored_market = scored_market.merge(drops, on="listing_id", how="left")
+@st.cache_data(
+    ttl=OPPORTUNITY_CACHE_TTL_SECONDS,
+    show_spinner="Building opportunity dataset…",
+)
+def _load_dashboard_frame_cached(
+    active_market_only: bool,
+    freshness: tuple,
+) -> pd.DataFrame:
+    return build_opportunity_frame(_load_listings_cached(freshness), active_market_only)
 
-    return scored_market
+
+def load_dashboard_frame(active_market_only: bool = True) -> pd.DataFrame:
+    freshness = dashboard_source_freshness()
+    return _load_dashboard_frame_cached(active_market_only, freshness)
+
+
+@st.cache_data(ttl=OPPORTUNITY_CACHE_TTL_SECONDS, show_spinner=False)
+def _load_listing_analysis_cached(listing_id: str, freshness: tuple) -> dict | None:
+    listings = _load_listings_cached(freshness)
+    match = listings.loc[listings["listing_id"].astype(str).eq(str(listing_id))]
+    if match.empty:
+        return None
+    target = match.iloc[0]
+    eligibility = evaluate_valuation_eligibility(target)
+    comparable = find_comparables(target, listings)
+    market_value = estimate_market_value(comparable)
+    economic = calculate_economic_opportunity(target.get("price"), market_value)
+    score = calculate_opportunity_score(economic, eligibility.status)
+    semantics = extract_vehicle_semantics(target.get("title"))
+    return {
+        "listing": target,
+        "eligibility": eligibility,
+        "semantics": semantics,
+        "comparable": comparable,
+        "market_value": market_value,
+        "economic": economic,
+        "score": score,
+    }
+
+
+def load_listing_analysis(listing_id: str) -> dict | None:
+    return _load_listing_analysis_cached(str(listing_id), dashboard_source_freshness())
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)

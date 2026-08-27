@@ -95,6 +95,7 @@ class ScrapeSchedulingTests(unittest.TestCase):
             )
         )
         stack.enter_context(patch("scrapers.kleinanzeigen_scraper._export_results"))
+        stack.enter_context(patch("scrapers.kleinanzeigen_scraper.record_collector_run"))
 
     def test_recent_known_search_result_updates_presence_without_detail_or_history(self):
         known = {

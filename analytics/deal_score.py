@@ -1,5 +1,4 @@
 import sqlite3
-import re
 import pandas as pd
 
 from config.paths import DATA_DIR, DB_PATH
@@ -7,6 +6,7 @@ from models.listing import TransmissionType
 from normalization.vehicle_fields import (
     normalize_first_registration,
     normalize_transmission,
+    registration_year,
 )
 from validation.listing_quality import (
     DataQuality,
@@ -19,15 +19,8 @@ MIN_COMPARABLE_VALUES = 3
 
 
 def extract_year(first_registration: str | None) -> int | None:
-    normalized = normalize_first_registration(first_registration)
-    if not normalized:
-        return None
-
-    match = re.search(r"(19|20)\d{2}", normalized)
-    if not match:
-        return None
-
-    return int(match.group(0))
+    """Backward-compatible wrapper around canonical registration normalization."""
+    return registration_year(first_registration)
 
 
 def year_group(year: int | None) -> str | None:

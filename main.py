@@ -48,8 +48,13 @@ def main(argv: list[str] | None = None) -> int:
     except ShutdownRequested as exc:
         logger.warning("shutdown_requested=true signal=%s", exc)
         return 130
-    except Exception:
+    except Exception as exc:
         logger.exception("fatal_scrape_failure=true search=%s", search_config.name)
+        try:
+            from storage.sqlite import record_collector_run
+            record_collector_run(search_name=search_config.name, succeeded=False, error_message=str(exc))
+        except Exception:
+            logger.exception("collector_run_record_failure=true search=%s", search_config.name)
         return 1
     return 0
 

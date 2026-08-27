@@ -37,6 +37,7 @@ from storage.sqlite import (
     mark_listing_checked,
     mark_listing_inactive,
     mark_listings_seen,
+    record_collector_run,
     upsert_listing,
 )
 from validation.listing_quality import validate_listing, validated_record
@@ -535,5 +536,12 @@ def run(
 
     summary.blocking_failures = breaker.blocking_failures
     _export_results(results, search_config, logger)
+    record_collector_run(
+        search_name=summary.search_name, succeeded=summary.stopped_reason is None,
+        listings_discovered=summary.listings_discovered, new_listings=summary.new_listings,
+        detail_requests=summary.detail_requests, details_succeeded=summary.details_succeeded,
+        retry_requests=summary.retry_requests, blocking_failures=summary.blocking_failures,
+        duration_seconds=summary.elapsed_seconds(), stopped_reason=summary.stopped_reason,
+    )
     logger.info("%s", summary.format())
     return summary

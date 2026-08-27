@@ -215,5 +215,21 @@ def get_listing(listing_id: str) -> Optional[pd.Series]:
     return match.iloc[0]
 
 
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
+def load_collector_run() -> dict | None:
+    try:
+        with _connect_read_only() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """SELECT latest.*,
+                       (SELECT MAX(finished_at) FROM scrape_runs WHERE succeeded = 1) AS last_success_at,
+                       (SELECT COUNT(*) FROM scrape_runs) AS total_runs
+                FROM scrape_runs AS latest ORDER BY finished_at DESC, id DESC LIMIT 1"""
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(row) if row else None
+
 def clear_dashboard_cache() -> None:
     st.cache_data.clear()

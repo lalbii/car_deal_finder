@@ -34,7 +34,7 @@ class MainCliTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0].name, "bmw_320d_nrw")
 
     def test_fatal_scraper_failure_returns_nonzero(self):
-        with patch("main.configure_logging") as configure_logging, patch(
+        with patch("storage.sqlite.record_collector_run"), patch("main.configure_logging") as configure_logging, patch(
             "main.ProcessLock"
         ), patch("main.graceful_shutdown_signals"), patch(
             "scrapers.kleinanzeigen_scraper.run", side_effect=RuntimeError("boom")

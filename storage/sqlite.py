@@ -70,6 +70,47 @@ def init_db():
             view_count INTEGER
         )
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            search_name TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            succeeded INTEGER NOT NULL,
+            listings_discovered INTEGER NOT NULL DEFAULT 0,
+            new_listings INTEGER NOT NULL DEFAULT 0,
+            detail_requests INTEGER NOT NULL DEFAULT 0,
+            details_succeeded INTEGER NOT NULL DEFAULT 0,
+            retry_requests INTEGER NOT NULL DEFAULT 0,
+            blocking_failures INTEGER NOT NULL DEFAULT 0,
+            duration_seconds REAL NOT NULL DEFAULT 0,
+            stopped_reason TEXT,
+            error_message TEXT
+        )
+        """)
+        legacy_runs = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?",
+            ("table", "collector_runs"),
+        ).fetchone()
+        if legacy_runs:
+            conn.execute("INSERT OR IGNORE INTO scrape_runs SELECT * FROM collector_runs")
+        conn.commit()
+
+
+def record_collector_run(*, search_name: str, succeeded: bool, listings_discovered: int = 0,
+                         new_listings: int = 0, detail_requests: int = 0, details_succeeded: int = 0,
+                         retry_requests: int = 0, blocking_failures: int = 0, duration_seconds: float = 0,
+                         stopped_reason: str | None = None, error_message: str | None = None,
+                         finished_at: datetime | None = None) -> None:
+    init_db()
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO scrape_runs (search_name, finished_at, succeeded, listings_discovered,
+                new_listings, detail_requests, details_succeeded, retry_requests, blocking_failures,
+                duration_seconds, stopped_reason, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (search_name, _timestamp(finished_at), int(succeeded), listings_discovered, new_listings,
+              detail_requests, details_succeeded, retry_requests, blocking_failures, duration_seconds,
+              stopped_reason, error_message))
         conn.commit()
 
 

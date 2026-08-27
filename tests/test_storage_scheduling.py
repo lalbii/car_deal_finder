@@ -17,6 +17,13 @@ class StorageSchedulingTests(unittest.TestCase):
         self.addCleanup(self.db_patch.stop)
         sqlite.init_db()
 
+    def test_scrape_run_count_comes_from_persisted_rows(self):
+        sqlite.record_collector_run(search_name="test", succeeded=True)
+        sqlite.record_collector_run(search_name="test", succeeded=False)
+        with sqlite.get_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM scrape_runs").fetchone()[0]
+        self.assertEqual(count, 2)
+
     def test_search_presence_updates_lifecycle_without_overwriting_detail_or_history(self):
         observed_at = datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)
         seen_at = observed_at + timedelta(hours=1)

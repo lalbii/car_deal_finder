@@ -10,6 +10,7 @@ from dashboard.data import (
     load_listings,
     load_overview,
     load_price_drop_summary,
+    load_collector_run,
 )
 from dashboard.formatting import (
     format_euro,
@@ -29,6 +30,53 @@ def _year_series(df: pd.DataFrame) -> pd.Series:
         df["first_registration"].astype(str).str.extract(r"(\d{4})")[0],
         errors="coerce",
     )
+
+
+
+def _collector_health(run: dict | None, now: pd.Timestamp | None = None) -> dict:
+    now = now or pd.Timestamp.now(tz="UTC")
+    if not run:
+        return {"label": "⚪ UNKNOWN", "last": "—", "next": "—"}
+    finished = pd.to_datetime(run.get("finished_at"), utc=True, errors="coerce")
+    last_success = pd.to_datetime(run.get("last_success_at"), utc=True, errors="coerce")
+    if pd.isna(finished):
+        return {"label": "⚪ UNKNOWN", "last": "—", "next": "—"}
+    if not bool(run.get("succeeded")) or int(run.get("blocking_failures") or 0) > 0:
+        label = "🔴 ERROR"
+    elif pd.isna(last_success) or now - last_success > pd.Timedelta(hours=2):
+        label = "🟡 STALE"
+    else:
+        label = "🟢 HEALTHY"
+    next_hour = now.floor("h") + pd.Timedelta(hours=1)
+    minutes = max(0, int((next_hour - now).total_seconds() // 60))
+    return {"label": label, "last": relative_time(last_success, now), "next": f"~{minutes} min"}
+
+
+def _format_duration(seconds: object) -> str:
+    total = max(0, int(float(seconds or 0)))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m{secs:02d}s"
+
+
+def render_collector_health() -> None:
+    run = load_collector_run()
+    health = _collector_health(run)
+    values = run or {}
+    health_label = health.get("label")
+    health_last = health.get("last")
+    health_next = health.get("next")
+    seen = int(values.get("listings_discovered") or 0)
+    new = int(values.get("new_listings") or 0)
+    detail_requests = int(values.get("detail_requests") or 0)
+    details_ok = int(values.get("details_succeeded") or 0)
+    retries = int(values.get("retry_requests") or 0)
+    blocking = int(values.get("blocking_failures") or 0)
+    duration = _format_duration(values.get("duration_seconds"))
+    total_runs = int(values.get("total_runs") or 0)
+    status_line = f"<strong>{health_label}</strong>&nbsp;&nbsp; Last success: {health_last}&nbsp;&nbsp; Next run: {health_next} <span style=opacity:.65>(approx.)</span>&nbsp;&nbsp; Runs: {total_runs}"
+    metrics = f"{seen} seen │ {new} new │ {detail_requests} details ({details_ok} ok) │ {retries} retries │ {blocking} blocking │ {duration}"
+    st.markdown(f"""<div style="border:1px solid rgba(128,128,128,.35);border-radius:.45rem;padding:.55rem .8rem;margin-bottom:.8rem;line-height:1.35"><div style="font-size:.7rem;font-weight:700;letter-spacing:.12em;opacity:.7">COLLECTOR</div><div style="font-size:.9rem">{status_line}</div><div style="font-size:.78rem;opacity:.82">{metrics}</div></div>""", unsafe_allow_html=True)
 
 
 def render_opportunities() -> None:

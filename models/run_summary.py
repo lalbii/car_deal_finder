@@ -29,6 +29,9 @@ class ScrapeRunSummary:
     stopped_reason: str | None = None
     failures: Counter[str] = field(default_factory=Counter)
 
+    def elapsed_seconds(self) -> float:
+        return max(0.0, monotonic() - self.started_at)
+
     def add_failure(self, category: str) -> None:
         self.failures[category] += 1
 
@@ -58,7 +61,7 @@ class ScrapeRunSummary:
                 f"Stopped reason: {self.stopped_reason or 'none'}",
                 "Failures:",
                 *failure_lines,
-                f"Duration: {_duration_text(monotonic() - self.started_at)}",
+                f"Duration: {_duration_text(self.elapsed_seconds())}",
             ]
         )
 

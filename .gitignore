@@ -7,3 +7,4 @@ data/*.csv
 data/*.html
 logs/
 .car_deal_finder.lock
+.venv/

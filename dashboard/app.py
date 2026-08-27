@@ -12,6 +12,7 @@ import streamlit as st
 
 from dashboard.data import clear_dashboard_cache
 from dashboard.views import (
+    render_collector_health,
     render_listing_detail,
     render_market_overview,
     render_opportunities,
@@ -42,6 +43,8 @@ if st.sidebar.button("Refresh data"):
     st.rerun()
 
 st.sidebar.caption("Read-only dashboard · current market data")
+
+render_collector_health()
 
 if view == "Opportunities":
     render_opportunities()

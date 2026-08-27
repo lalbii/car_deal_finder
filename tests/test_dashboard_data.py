@@ -3,6 +3,7 @@ import pandas as pd
 
 from dashboard.data import _derive_price_drop_summary
 from dashboard.formatting import format_euro, format_mileage, format_percent
+from dashboard.views import _collector_health, _format_duration
 
 
 class DashboardDataTests(unittest.TestCase):
@@ -35,6 +36,16 @@ class DashboardDataTests(unittest.TestCase):
         result = _derive_price_drop_summary(df)
         self.assertEqual(len(result), 1)
         self.assertEqual(result.iloc[0]["price_drop_abs"], 500)
+
+    def test_collector_health_states_and_schedule(self):
+        now = pd.Timestamp("2026-08-27T10:08:00Z")
+        healthy = {"finished_at": "2026-08-27T10:00:00Z", "last_success_at": "2026-08-27T10:00:00Z", "succeeded": 1, "blocking_failures": 0}
+        self.assertEqual(_collector_health(healthy, now), {"label": "🟢 HEALTHY", "last": "8m ago", "next": "~52 min"})
+        stale = dict(healthy, finished_at="2026-08-27T07:00:00Z", last_success_at="2026-08-27T07:00:00Z")
+        self.assertEqual(_collector_health(stale, now)["label"], "🟡 STALE")
+        self.assertEqual(_collector_health(dict(healthy, succeeded=0), now)["label"], "🔴 ERROR")
+        self.assertEqual(_collector_health(None, now)["label"], "⚪ UNKNOWN")
+        self.assertEqual(_format_duration(132), "2m12s")
 
     def test_formatting(self):
         self.assertEqual(format_euro(9500), "€9.500")

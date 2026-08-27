@@ -6,6 +6,7 @@ from typing import Mapping
 
 import pandas as pd
 
+from analytics.vehicle_semantics import BodyStyle, extract_vehicle_semantics
 from analytics.valuation_eligibility import (
     ValuationStatus,
     evaluate_valuation_eligibility,
@@ -27,6 +28,7 @@ class ComparableConfig:
     max_mileage_distance_km: int = 100_000
     min_comparables: int = 5
     target_comparables: int = 20
+    body_style_guardrails: bool = True
 
     def __post_init__(self) -> None:
         if self.max_year_distance < 0 or self.max_mileage_distance_km < 0:
@@ -49,13 +51,28 @@ class ComparableResult:
     transmission_match_count: int = 0
     year_match_count: int = 0
     mileage_match_count: int = 0
+    target_body_style: BodyStyle = BodyStyle.UNKNOWN
+    body_style_match_count: int = 0
+    known_body_style_mismatch_count: int = 0
+    unknown_body_style_count: int = 0
+    same_body_style_count: int = 0
 
 
 _OUTPUT_COLUMNS = (
     "listing_id", "title", "price", "mileage_km", "year", "transmission",
     "location", "year_distance", "mileage_distance_km", "year_weight",
-    "mileage_weight", "similarity_weight",
+    "mileage_weight", "target_body_style", "candidate_body_style",
+    "body_style_factor", "similarity_weight",
 )
+
+
+def body_style_factor(target: BodyStyle, candidate: BodyStyle) -> float:
+    """Return the explicit Comparable Engine v3 body-style factor."""
+    if target == BodyStyle.UNKNOWN and candidate == BodyStyle.UNKNOWN:
+        return 0.65
+    if BodyStyle.UNKNOWN in {target, candidate}:
+        return 0.75
+    return 1.0 if target == candidate else 0.0
 
 
 def _empty_comparables(source: pd.DataFrame) -> pd.DataFrame:
@@ -83,6 +100,7 @@ def find_comparables(
     target_year = registration_year(_row_value(target, "first_registration"))
     target_mileage = _row_value(target, "mileage_km")
     target_transmission = normalize_transmission(_row_value(target, "transmission"))
+    target_body_style = extract_vehicle_semantics(_row_value(target, "title")).body_style
     if (
         target_price is None
         or target_year is None
@@ -125,9 +143,45 @@ def find_comparables(
     ].copy()
     mileage_match_count = len(candidates)
 
+    candidates["target_body_style"] = target_body_style.value
+    candidate_titles = (
+        candidates["title"]
+        if "title" in candidates
+        else pd.Series(None, index=candidates.index)
+    )
+    candidates["candidate_body_style"] = candidate_titles.apply(
+        lambda title: extract_vehicle_semantics(title).body_style.value
+    )
+    if cfg.body_style_guardrails:
+        candidates["body_style_factor"] = pd.Series(
+            (
+                body_style_factor(target_body_style, BodyStyle(candidate))
+                for candidate in candidates["candidate_body_style"]
+            ),
+            index=candidates.index,
+            dtype=float,
+        )
+        known_body_style_mismatch_count = int(candidates["body_style_factor"].eq(0.0).sum())
+        candidates = candidates.loc[candidates["body_style_factor"].gt(0.0)].copy()
+    else:
+        candidates["body_style_factor"] = 1.0
+        known_body_style_mismatch_count = 0
+    body_style_match_count = len(candidates)
+    unknown_body_style_count = int(
+        candidates["candidate_body_style"].eq(BodyStyle.UNKNOWN.value).sum()
+    )
+    same_body_style_count = int(
+        target_body_style != BodyStyle.UNKNOWN
+        and candidates["candidate_body_style"].eq(target_body_style.value).sum()
+    )
+
     candidates["year_weight"] = 1.0 / (1.0 + candidates["year_distance"])
     candidates["mileage_weight"] = 1.0 / (1.0 + candidates["mileage_distance_km"] / 50_000.0)
-    candidates["similarity_weight"] = candidates["year_weight"] * candidates["mileage_weight"]
+    candidates["similarity_weight"] = (
+        candidates["year_weight"]
+        * candidates["mileage_weight"]
+        * candidates["body_style_factor"]
+    )
     candidates = candidates.sort_values(
         ["similarity_weight", "year_distance", "mileage_distance_km", "listing_id"],
         ascending=[False, True, True, True], kind="mergesort",
@@ -139,4 +193,7 @@ def find_comparables(
         target_id, comparables, candidate_count, len(comparables), status,
         active_count, eligible_count, risk_count, ineligible_count,
         transmission_match_count, year_match_count, mileage_match_count,
+        target_body_style, body_style_match_count,
+        known_body_style_mismatch_count, unknown_body_style_count,
+        same_body_style_count,
     )

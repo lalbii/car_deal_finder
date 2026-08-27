@@ -2,7 +2,13 @@ import unittest
 
 import pandas as pd
 
-from analytics.comparables import ComparableConfig, ComparableStatus, find_comparables
+from analytics.comparables import (
+    ComparableConfig,
+    ComparableStatus,
+    body_style_factor,
+    find_comparables,
+)
+from analytics.vehicle_semantics import BodyStyle
 from analytics.valuation_eligibility import ValuationStatus
 
 
@@ -60,6 +66,77 @@ class ComparableTests(unittest.TestCase):
         self.assertEqual(result.comparables["listing_id"].tolist(), ["exact", "near", "far"])
         self.assertTrue((result.comparables["similarity_weight"] > 0).all())
 
+    def test_known_body_style_matches_are_allowed_and_mismatches_excluded(self):
+        target = row("target", title="BMW 320d Touring")
+        candidates = [
+            row("wagon", title="BMW 320d Kombi"),
+            row("sedan", title="BMW 320d Limousine"),
+            row("coupe", title="BMW 320d Coupé"),
+            row("convertible", title="BMW 320d Cabrio"),
+        ]
+        result = find_comparables(
+            target,
+            pd.DataFrame([target, *candidates]),
+            ComparableConfig(min_comparables=1),
+        )
+        self.assertEqual(result.comparables["listing_id"].tolist(), ["wagon"])
+        self.assertEqual(result.known_body_style_mismatch_count, 3)
+        self.assertEqual(result.same_body_style_count, 1)
+        self.assertEqual(result.comparables.iloc[0]["body_style_factor"], 1.0)
+
+    def test_unknown_body_styles_remain_usable_with_explicit_penalties(self):
+        known_target = row("known-target", title="BMW 320d Touring")
+        unknown_target = row("unknown-target", title="BMW 320d Automatik")
+        known_candidate = row("known", title="BMW 320d Kombi")
+        unknown_candidate = row("unknown", title="BMW 320d Automatik")
+
+        known_result = find_comparables(
+            known_target,
+            pd.DataFrame([known_target, unknown_candidate]),
+            ComparableConfig(min_comparables=1),
+        )
+        unknown_known_result = find_comparables(
+            unknown_target,
+            pd.DataFrame([unknown_target, known_candidate]),
+            ComparableConfig(min_comparables=1),
+        )
+        unknown_result = find_comparables(
+            unknown_target,
+            pd.DataFrame([unknown_target, unknown_candidate]),
+            ComparableConfig(min_comparables=1),
+        )
+        self.assertEqual(known_result.comparables.iloc[0]["body_style_factor"], 0.75)
+        self.assertEqual(unknown_known_result.comparables.iloc[0]["body_style_factor"], 0.75)
+        self.assertEqual(unknown_result.comparables.iloc[0]["body_style_factor"], 0.65)
+
+    def test_body_style_factor_is_deterministic(self):
+        cases = (
+            (BodyStyle.WAGON, BodyStyle.WAGON, 1.0),
+            (BodyStyle.WAGON, BodyStyle.UNKNOWN, 0.75),
+            (BodyStyle.UNKNOWN, BodyStyle.WAGON, 0.75),
+            (BodyStyle.UNKNOWN, BodyStyle.UNKNOWN, 0.65),
+            (BodyStyle.WAGON, BodyStyle.SEDAN, 0.0),
+        )
+        for target, candidate, expected in cases:
+            with self.subTest(target=target, candidate=candidate):
+                self.assertEqual(body_style_factor(target, candidate), expected)
+                self.assertEqual(body_style_factor(target, candidate), expected)
+
+    def test_drivetrain_does_not_affect_selection_or_weight(self):
+        target = row("target", title="BMW 320d Touring xDrive")
+        candidates = [
+            row("awd", title="BMW 320d Touring quattro"),
+            row("unknown", title="BMW 320d Touring"),
+            row("rwd", title="BMW 320d Touring Heckantrieb"),
+        ]
+        result = find_comparables(
+            target,
+            pd.DataFrame([target, *candidates]),
+            ComparableConfig(min_comparables=1),
+        )
+        self.assertEqual(result.comparables["listing_id"].tolist(), ["awd", "rwd", "unknown"])
+        self.assertEqual(result.comparables["similarity_weight"].nunique(), 1)
+
     def test_semantic_hard_exclusions_and_soft_risk_are_excluded(self):
         result = self.select([
             row("clean"),
@@ -89,6 +166,14 @@ class ComparableTests(unittest.TestCase):
         result = find_comparables(target, pd.DataFrame([target, row("only")]))
         self.assertEqual(result.status, ComparableStatus.INSUFFICIENT_COMPARABLES)
         self.assertEqual(result.comparable_count, 1)
+
+    def test_known_mismatch_can_leave_an_empty_insufficient_result(self):
+        target = row("target", title="BMW 320d Touring")
+        sedan = row("sedan", title="BMW 320d Limousine")
+        result = find_comparables(target, pd.DataFrame([target, sedan]))
+        self.assertEqual(result.status, ComparableStatus.INSUFFICIENT_COMPARABLES)
+        self.assertEqual(result.comparable_count, 0)
+        self.assertEqual(result.known_body_style_mismatch_count, 1)
 
     def test_target_statuses_are_explicit(self):
         frame = pd.DataFrame([row("other")])

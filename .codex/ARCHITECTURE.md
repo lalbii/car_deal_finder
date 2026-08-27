@@ -407,6 +407,11 @@ estimated_market_value
 
 Never claim high confidence from a very small or poor comparable group.
 
+Comparable Engine v3 uses explicit generic body-style title evidence as an
+equivalence guardrail. Known, different body styles are excluded; UNKNOWN
+semantics remain usable with a transparent similarity penalty. Drivetrain is
+diagnostic only and is not used for comparable filtering or weighting.
+
 ---
 
 # Market Value

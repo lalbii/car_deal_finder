@@ -94,6 +94,367 @@ This design allows the system to continue operating when:
 
 After reboot, the persistent systemd timer is restored automatically and scheduled scraping resumes.
 
+# How Valuation and Opportunity Scoring Work
+
+The analytics pipeline estimates how attractive a listing appears relative to
+the observed Kleinanzeigen asking market:
+
+```text
+listing
+→ validation / eligibility
+→ comparable selection
+→ similarity weighting
+→ weighted-median asking-market estimate
+→ valuation confidence
+→ market gap / discount
+→ Opportunity Score v2.1
+```
+
+Estimated market value is derived from advertised asking prices. It is not a
+final transaction price. Opportunity Score is a sourcing heuristic, not a
+probability, expected profit, ROI, or purchase recommendation.
+
+## Valuation eligibility
+
+Every target and candidate receives one canonical status:
+
+```text
+ELIGIBLE            clean enough for valuation and comparable use
+ELIGIBLE_WITH_RISK  may be valued, but receives an explicit risk adjustment
+INELIGIBLE          excluded from valuation
+```
+
+The versioned semantic vocabulary in `config/valuation_vocabulary.yaml` covers
+concepts such as leasing takeover, parts-only listings, severe mechanical
+damage, project or scrap vehicles, accident indications, and missing TÜV. The
+configuration is the source of vocabulary, rule class, action, and reason; the
+Python implementation owns text normalization, matching, negation handling,
+and hard-rule precedence. The README intentionally does not duplicate the full
+term list because that vocabulary evolves independently.
+
+Eligibility also validates core price, mileage, registration, and transmission
+data. Derived conditions such as placeholder prices, extreme mileage, and
+suspiciously low prices participate in the same canonical result.
+
+## Generic vehicle semantics
+
+Title-derived vehicle semantics are generic and brand-independent. The current
+body-style classes are:
+
+```text
+WAGON
+SEDAN
+COUPE
+CONVERTIBLE
+HATCHBACK
+SUV
+VAN
+UNKNOWN
+```
+
+The extractor also recognizes drivetrain evidence such as `AWD` and `RWD`, but
+drivetrain is currently not used by comparable filtering or Opportunity Score.
+There is no BMW chassis-code or brand-specific generation inference. When the
+persisted title does not provide clear evidence—or provides conflicting
+evidence—`UNKNOWN` is intentional and preferred over guessing. The versioned
+terms live in `config/vehicle_semantics.yaml`.
+
+## Comparable selection
+
+Comparable Engine v3 requires candidates to be:
+
+- active;
+- canonically `ELIGIBLE` (risk-flagged candidates are not used as comparables);
+- in the same normalized transmission group;
+- within three registration years by default;
+- within 100,000 km by default; and
+- compatible under the body-style guardrails.
+
+The default engine retains at most 20 highest-ranked comparables and requires
+at least five for an available estimate. Body-style compatibility is explicit:
+
+```text
+known + same known      → allowed
+known + different known → excluded
+known + UNKNOWN         → allowed with penalty
+UNKNOWN + known         → allowed with penalty
+UNKNOWN + UNKNOWN       → allowed with penalty
+```
+
+Drivetrain is currently ignored by comparable selection.
+
+## Similarity weight
+
+Year proximity contributes:
+
+```text
+year_weight =
+    1 / (1 + year_distance)
+```
+
+Mileage proximity contributes:
+
+```text
+mileage_weight =
+    1 / (1 + mileage_distance_km / 50000)
+```
+
+The body-style factor is:
+
+```text
+1.00 → same known body style
+0.75 → exactly one side UNKNOWN
+0.65 → both UNKNOWN
+0.00 → known mismatch
+```
+
+The final weight is:
+
+```text
+similarity_weight =
+    year_weight
+    × mileage_weight
+    × body_style_factor
+```
+
+A larger value represents a more similar comparable. Candidates are ordered
+deterministically by descending similarity weight, then year distance, mileage
+distance, and listing ID.
+
+## Estimated asking-market price
+
+The estimator does not use an arithmetic mean. It uses the
+similarity-weighted median asking price:
+
+```text
+estimated_market_price =
+    similarity-weighted median asking price
+```
+
+The algorithm is:
+
+1. Keep valid comparable asking prices with positive weights.
+2. Sort the comparables by price ascending.
+3. Sum their similarity weights.
+4. Calculate 50% of the total weight.
+5. Walk cumulative weight in ascending price order.
+6. Use the first asking price that reaches the 50% threshold.
+
+This is less sensitive than a mean to isolated extreme asking prices, while
+still giving more influence to the most similar vehicles.
+
+## Valuation confidence
+
+Confidence depends on comparable coverage and consistency, not comparable count
+alone. A strong comparable has:
+
+```text
+similarity_weight >= 0.5
+```
+
+The current thresholds are:
+
+```text
+HIGH:
+comparable_count >= 10
+strong_comparable_count >= 3
+total_similarity_weight >= 5.0
+dispersion <= 0.20
+
+MEDIUM:
+comparable_count >= 5
+strong_comparable_count >= 1
+total_similarity_weight >= 2.0
+dispersion <= 0.35
+
+LOW:
+an estimate exists, but the HIGH and MEDIUM conditions are not met
+
+UNAVAILABLE:
+no usable valuation exists
+```
+
+Price dispersion is:
+
+```text
+dispersion =
+    (Q3 - Q1) / unweighted_median_price
+```
+
+It describes the interquartile spread of comparable asking prices relative to
+their unweighted median. Lower dispersion indicates a tighter comparable-price
+cluster.
+
+## Economic opportunity metrics
+
+For an available valuation:
+
+```text
+market_gap_eur =
+    estimated_market_price - asking_price
+
+discount_percent =
+    market_gap_eur
+    / estimated_market_price
+    × 100
+```
+
+The UI-facing sign convention is:
+
+```text
+positive → below estimated asking market
+zero     → at estimated asking market
+negative → above estimated asking market
+```
+
+For example, an €8,000 asking price against a €10,000 estimate produces a
++€2,000 market gap and a +20% discount.
+
+Market gap is not profit. It excludes repairs, taxes, registration, transport,
+negotiation, financing, dealer costs, and the realized resale price.
+
+## Opportunity Score v2.1
+
+Opportunity Score is a bounded 0–100 sourcing heuristic. Its direct inputs are
+discount percentage, asking-market gap, valuation confidence, and canonical
+valuation risk/eligibility.
+
+It does **not** directly use views, freshness, listing age, drivetrain, year, or
+mileage. Year and mileage already influence the valuation through comparable
+selection; adding them directly to the score would count the same evidence
+twice.
+
+The discount component uses piecewise-linear interpolation between these
+points and is bounded to 0–100:
+
+| Discount | Component |
+| -------: | --------: |
+| <= -15% | 0 |
+| 0% | 40 |
+| +10% | 58 |
+| +20% | 72 |
+| +30% | 84 |
+| +45% | 94 |
+| >= +60% | 100 |
+
+The asking-market-gap component uses the same bounded interpolation approach:
+
+| Asking-market gap | Component |
+| ----------------: | --------: |
+| <= €0 | 0 |
+| €500 | 20 |
+| €1,000 | 35 |
+| €2,000 | 55 |
+| €3,000 | 68 |
+| €5,000 | 82 |
+| €8,000 | 92 |
+| >= €12,000 | 100 |
+
+The two components form the base score:
+
+```text
+base_opportunity =
+    0.70 × discount_component
+    + 0.30 × margin_component
+```
+
+Confidence multipliers are:
+
+```text
+HIGH        → 1.00
+MEDIUM      → 0.85
+LOW         → 0.65
+UNAVAILABLE → no score
+```
+
+Eligibility-risk behavior is:
+
+```text
+ELIGIBLE           → 1.00
+ELIGIBLE_WITH_RISK → 0.60
+INELIGIBLE         → no score
+```
+
+The final calculation is:
+
+```text
+opportunity_score =
+    clamp(
+        base_opportunity
+        × confidence_multiplier
+        × risk_multiplier,
+        0,
+        100
+    )
+```
+
+## Worked example
+
+```text
+Asking price:           €12,000
+Estimated market price: €15,000
+Market gap:             +€3,000
+Discount:               +20%
+Confidence:             HIGH
+Eligibility:            ELIGIBLE
+
+discount_component = 72
+margin_component   = 68
+
+base =
+    0.70 × 72
+    + 0.30 × 68
+    = 70.8
+
+final score =
+    70.8 × 1.00 × 1.00
+    = 70.8
+```
+
+## Comparable count and statistical context
+
+The dashboard exposes comparable count because the estimate should be reviewed
+with its evidence. For example:
+
+```text
+Estimated Market:   €18,000
+Confidence:         HIGH
+Comparables:        20
+Strong Comparables: 8
+```
+
+This is more informative than the estimate alone. Review `Comparable Count`,
+`Strong Comparable Count`, `Valuation Confidence`, and `Price Dispersion`
+together; comparable count by itself does not determine confidence.
+
+## Current limitations
+
+- Observed asking prices are not realized transaction prices.
+- Sparse titles may produce `UNKNOWN` body style.
+- Body style is title-derived and may be absent or ambiguous.
+- Equipment and trim are not fully modeled.
+- Brand-specific generations are not modeled.
+- Drivetrain is currently not used in valuation.
+- Repair costs are not modeled.
+- Vehicle condition may be omitted from the listing title and description.
+- `INACTIVE` does not necessarily mean `SOLD`.
+- Valuations and scores are computed dynamically and are not persisted.
+
+## Dashboard analytics performance
+
+The dashboard prepares one in-memory comparable universe per source snapshot:
+
+```text
+load once
+→ normalize / classify / extract semantics once
+→ reuse across target valuations
+```
+
+On one measurement with approximately 500 active listings, an uncached
+analytics build took about 7.7 seconds and a cached reload about 0.003 seconds.
+These timings are observations, not guarantees. Streamlit caches the dashboard
+dataset and invalidates it using source-data freshness signals.
+
 
 ## Python environment
 

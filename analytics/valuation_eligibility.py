@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+import re
 from typing import Mapping
 
 import pandas as pd
 
+from config.valuation_vocabulary import (
+    ValuationReason,
+    ValuationStatus,
+    ValuationVocabularyRule,
+    load_valuation_vocabulary,
+)
 from models.listing import TransmissionType
 from normalization.vehicle_fields import normalize_transmission
 from validation.listing_quality import (
@@ -21,25 +27,6 @@ EXTREME_MILEAGE_KM = 400_000
 SUSPICIOUSLY_LOW_PRICE_EUR = 1_000
 
 
-class ValuationStatus(str, Enum):
-    ELIGIBLE = "ELIGIBLE"
-    ELIGIBLE_WITH_RISK = "ELIGIBLE_WITH_RISK"
-    INELIGIBLE = "INELIGIBLE"
-
-
-class ValuationReason(str, Enum):
-    LEASING_TAKEOVER = "LEASING_TAKEOVER"
-    PARTS_ONLY = "PARTS_ONLY"
-    SEVERE_MECHANICAL_DAMAGE = "SEVERE_MECHANICAL_DAMAGE"
-    PROJECT_OR_SCRAP = "PROJECT_OR_SCRAP"
-    PLACEHOLDER_PRICE = "PLACEHOLDER_PRICE"
-    MISSING_CORE_DATA = "MISSING_CORE_DATA"
-    EXTREME_MILEAGE = "EXTREME_MILEAGE"
-    SUSPICIOUSLY_LOW_PRICE = "SUSPICIOUSLY_LOW_PRICE"
-    ACCIDENT = "ACCIDENT"
-    NO_TUV = "NO_TUV"
-
-
 @dataclass(frozen=True)
 class ValuationEligibility:
     status: ValuationStatus
@@ -47,15 +34,9 @@ class ValuationEligibility:
     core_data_diagnostics: tuple[str, ...] = ()
 
 
-_HARD_TEXT_RULES = (
-    (ValuationReason.LEASING_TAKEOVER, ("leasingübernahme", "leasinguebernahme", "leasing takeover")),
-    (ValuationReason.PARTS_ONLY, ("teileträger", "teiletraeger", "schlachtfahrzeug", "nur teile")),
-    (ValuationReason.SEVERE_MECHANICAL_DAMAGE, ("motorschaden", "getriebeschaden")),
-    (ValuationReason.PROJECT_OR_SCRAP, ("bastlerfahrzeug", "projektfahrzeug", "schrottfahrzeug")),
-)
-_RISK_TEXT_RULES = (
-    (ValuationReason.ACCIDENT, ("unfallfahrzeug", "unfallschaden", "unfallwagen")),
-    (ValuationReason.NO_TUV, ("kein tüv", "kein tuev", "ohne tüv", "ohne tuev", "tüv abgelaufen", "tuev abgelaufen")),
+_NEGATION_BEFORE_TERM = re.compile(
+    r"(?:kein(?:e|en|em|er|es)?|ohne|nicht)\s+$",
+    re.IGNORECASE,
 )
 
 
@@ -65,11 +46,27 @@ def _value(listing: Mapping | pd.Series, name: str):
 
 
 def _searchable_text(listing: Mapping | pd.Series) -> str:
-    return " ".join(
+    return " ".join(" ".join(
         str(value).casefold()
         for value in (_value(listing, "title"), _value(listing, "description"))
         if value
-    )
+    ).split())
+
+
+def _term_is_negated(text: str, start: int, term: str) -> bool:
+    if term.startswith(("kein ", "ohne ", "nicht ")):
+        return False
+    return _NEGATION_BEFORE_TERM.search(text[max(0, start - 20):start]) is not None
+
+
+def _rule_matches(text: str, rule: ValuationVocabularyRule) -> bool:
+    for term in rule.terms:
+        start = text.find(term)
+        while start >= 0:
+            if not _term_is_negated(text, start, term):
+                return True
+            start = text.find(term, start + 1)
+    return False
 
 
 def evaluate_valuation_eligibility(
@@ -96,8 +93,9 @@ def evaluate_valuation_eligibility(
     )
 
     text = _searchable_text(listing)
+    vocabulary = load_valuation_vocabulary()
     hard_reasons = [
-        reason for reason, terms in _HARD_TEXT_RULES if any(term in text for term in terms)
+        rule.reason for rule in vocabulary.hard_rules if _rule_matches(text, rule)
     ]
     if price is not None and price <= PLACEHOLDER_PRICE_MAX_EUR:
         hard_reasons.append(ValuationReason.PLACEHOLDER_PRICE)
@@ -109,7 +107,7 @@ def evaluate_valuation_eligibility(
         )
 
     risk_reasons = [
-        reason for reason, terms in _RISK_TEXT_RULES if any(term in text for term in terms)
+        rule.reason for rule in vocabulary.soft_rules if _rule_matches(text, rule)
     ]
     if mileage > EXTREME_MILEAGE_KM:
         risk_reasons.append(ValuationReason.EXTREME_MILEAGE)

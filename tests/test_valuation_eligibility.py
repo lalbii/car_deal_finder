@@ -71,6 +71,25 @@ class ValuationEligibilityTests(unittest.TestCase):
             ("price:MISSING", "first_registration:INVALID", "transmission:UNKNOWN"),
         )
 
+    def test_negated_damage_and_safe_accident_language_are_not_adverse(self):
+        for title in (
+            "BMW 320d kein Motorschaden",
+            "BMW 320d ohne Motorschaden",
+            "BMW 320d kein Unfall",
+            "BMW 320d unfallfrei",
+        ):
+            with self.subTest(title=title):
+                result = evaluate_valuation_eligibility(listing(title=title))
+                self.assertEqual(result.status, ValuationStatus.ELIGIBLE)
+                self.assertEqual(result.reasons, ())
+
+    def test_configured_no_tuv_phrases_remain_soft_risks(self):
+        for title in ("BMW 320d kein TÜV", "BMW 320d ohne TÜV"):
+            with self.subTest(title=title):
+                result = evaluate_valuation_eligibility(listing(title=title))
+                self.assertEqual(result.status, ValuationStatus.ELIGIBLE_WITH_RISK)
+                self.assertIn(ValuationReason.NO_TUV, result.reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

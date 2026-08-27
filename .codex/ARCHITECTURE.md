@@ -614,6 +614,14 @@ transmission
 
 Do not build an unnecessarily complex configuration framework yet.
 
+## Valuation vocabulary
+
+`config/valuation_vocabulary.yaml` is the versioned source of truth for semantic
+valuation terms, their canonical reasons, and hard/soft eligibility actions.
+Python owns text normalization, matching, negation, precedence, and canonical
+classification; vocabulary changes should normally edit YAML rather than the
+classifier. A later historical-snapshot phase may record the vocabulary version.
+
 ---
 
 # Testing Priorities

@@ -1,0 +1,65 @@
+version: 1
+
+rules:
+  - category: transaction_type
+    name: leasing_takeover
+    rule_class: HARD
+    action: INELIGIBLE
+    reason: LEASING_TAKEOVER
+    terms:
+      - leasingübernahme
+      - leasinguebernahme
+      - leasing takeover
+
+  - category: vehicle_use
+    name: parts_only
+    rule_class: HARD
+    action: INELIGIBLE
+    reason: PARTS_ONLY
+    terms:
+      - teileträger
+      - teiletraeger
+      - schlachtfahrzeug
+      - nur teile
+
+  - category: condition
+    name: severe_mechanical_damage
+    rule_class: HARD
+    action: INELIGIBLE
+    reason: SEVERE_MECHANICAL_DAMAGE
+    terms:
+      - motorschaden
+      - getriebeschaden
+
+  - category: vehicle_use
+    name: project_or_scrap
+    rule_class: HARD
+    action: INELIGIBLE
+    reason: PROJECT_OR_SCRAP
+    terms:
+      - bastlerfahrzeug
+      - projektfahrzeug
+      - schrottfahrzeug
+
+  - category: condition
+    name: accident
+    rule_class: SOFT
+    action: ELIGIBLE_WITH_RISK
+    reason: ACCIDENT
+    terms:
+      - unfallfahrzeug
+      - unfallschaden
+      - unfallwagen
+
+  - category: roadworthiness
+    name: no_tuv
+    rule_class: SOFT
+    action: ELIGIBLE_WITH_RISK
+    reason: NO_TUV
+    terms:
+      - kein tüv
+      - kein tuev
+      - ohne tüv
+      - ohne tuev
+      - tüv abgelaufen
+      - tuev abgelaufen

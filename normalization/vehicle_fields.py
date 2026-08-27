@@ -119,6 +119,12 @@ def normalize_first_registration(value: str | None) -> str | None:
     return None
 
 
+def registration_year(value: str | None) -> int | None:
+    """Return the year from a valid normalized registration value."""
+    normalized = normalize_first_registration(value)
+    return int(normalized[:4]) if normalized is not None else None
+
+
 def registration_is_in_future(value: str, today: date | None = None) -> bool:
     current = today or date.today()
     year = int(value[:4])

@@ -7,7 +7,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-from analytics.comparables import find_comparables
+from analytics.comparables import find_comparables, prepare_comparable_universe
 from analytics.market_value import estimate_market_value
 from analytics.opportunity import (
     calculate_economic_opportunity,
@@ -174,14 +174,20 @@ def build_opportunity_frame(
     market = listings.copy()
     if active_market_only and "is_active" in market.columns:
         market = market.loc[market["is_active"] == 1].copy()
+    universe = prepare_comparable_universe(listings)
     rows = []
     for _, target in market.iterrows():
-        eligibility = evaluate_valuation_eligibility(target)
-        comparable = find_comparables(target, listings)
+        listing_id = str(target["listing_id"])
+        eligibility = universe.eligibility_by_id.get(listing_id)
+        if eligibility is None:
+            eligibility = evaluate_valuation_eligibility(target)
+        comparable = find_comparables(target, universe=universe)
         market_value = estimate_market_value(comparable)
         economic = calculate_economic_opportunity(target.get("price"), market_value)
         score = calculate_opportunity_score(economic, eligibility.status)
-        semantics = extract_vehicle_semantics(target.get("title"))
+        semantics = universe.semantics_by_id.get(listing_id)
+        if semantics is None:
+            semantics = extract_vehicle_semantics(target.get("title"))
         row = target.to_dict()
         row.update(
             {
@@ -233,12 +239,17 @@ def _load_listing_analysis_cached(listing_id: str, freshness: tuple) -> dict | N
     if match.empty:
         return None
     target = match.iloc[0]
-    eligibility = evaluate_valuation_eligibility(target)
-    comparable = find_comparables(target, listings)
+    universe = prepare_comparable_universe(listings)
+    eligibility = universe.eligibility_by_id.get(str(listing_id))
+    if eligibility is None:
+        eligibility = evaluate_valuation_eligibility(target)
+    comparable = find_comparables(target, universe=universe)
     market_value = estimate_market_value(comparable)
     economic = calculate_economic_opportunity(target.get("price"), market_value)
     score = calculate_opportunity_score(economic, eligibility.status)
-    semantics = extract_vehicle_semantics(target.get("title"))
+    semantics = universe.semantics_by_id.get(str(listing_id))
+    if semantics is None:
+        semantics = extract_vehicle_semantics(target.get("title"))
     return {
         "listing": target,
         "eligibility": eligibility,

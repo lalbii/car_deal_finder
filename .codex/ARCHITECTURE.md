@@ -520,6 +520,16 @@ are cached in memory using persisted database freshness as part of the cache
 key and are not stored back to the database. Listing detail exposes the full
 valuation chain and the canonical comparables used by the estimator.
 
+For repeated dashboard valuations, the comparable engine may prepare one
+read-only in-memory universe per source snapshot. Canonical eligibility,
+vehicle semantics, normalized transmission, registration year, mileage, and
+price are computed once for active listings, and clean candidates are grouped
+by transmission. `find_comparables` remains backward compatible; its prepared
+path applies the same filters, factors, deterministic ordering, and valuation
+formulas while avoiding repeated full-market classification and DataFrame
+work. This context is transient and never changes SQLite or cache freshness
+semantics.
+
 The application is not expected to automatically purchase or contact sellers.
 
 ---

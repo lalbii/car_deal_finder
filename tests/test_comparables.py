@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -7,8 +8,15 @@ from analytics.comparables import (
     ComparableStatus,
     body_style_factor,
     find_comparables,
+    prepare_comparable_universe,
 )
-from analytics.vehicle_semantics import BodyStyle
+from analytics.market_value import estimate_market_value
+from analytics.opportunity import (
+    calculate_economic_opportunity,
+    calculate_opportunity_score,
+)
+from analytics.valuation_eligibility import evaluate_valuation_eligibility
+from analytics.vehicle_semantics import BodyStyle, extract_vehicle_semantics
 from analytics.valuation_eligibility import ValuationStatus
 
 
@@ -191,6 +199,87 @@ class ComparableTests(unittest.TestCase):
         self.assertEqual(first.candidate_count, 3)
         self.assertEqual(first.comparables["listing_id"].tolist(), ["a", "b"])
         self.assertEqual(first.comparables["listing_id"].tolist(), second.comparables["listing_id"].tolist())
+
+    def test_prepared_universe_is_exactly_equivalent_to_legacy_path(self):
+        records = [
+            row("target", title="BMW 320d Touring", price=8_000),
+            row("exact", title="BMW 320d Kombi", price=10_000),
+            row("near", title="BMW 320d Touring", mileage=165_000, price=10_500),
+            row("older", title="BMW 320d Touring", year=2014, mileage=180_000, price=9_500),
+            row("unknown-body", title="BMW 320d Automatik", price=9_800),
+            row("sedan", title="BMW 320d Limousine", price=9_000),
+            row("manual", title="BMW 320d Touring", transmission="Schaltgetriebe"),
+            row("risk", title="BMW 320d Unfallfahrzeug"),
+            row("inactive", title="BMW 320d Touring", active=0),
+        ]
+        frame = pd.DataFrame(records)
+        target = frame.iloc[0]
+        config = ComparableConfig(min_comparables=1)
+        legacy = find_comparables(target, frame, config)
+        prepared = find_comparables(
+            target,
+            config=config,
+            universe=prepare_comparable_universe(frame),
+        )
+
+        scalar_fields = (
+            "target_listing_id", "active_count", "eligible_count", "candidate_count",
+            "comparable_count", "status", "transmission_match_count", "year_match_count",
+            "mileage_match_count", "risk_count", "ineligible_count", "target_body_style",
+            "body_style_match_count",
+            "known_body_style_mismatch_count", "unknown_body_style_count",
+            "same_body_style_count",
+        )
+        for field in scalar_fields:
+            self.assertEqual(getattr(legacy, field), getattr(prepared, field), field)
+        self.assertEqual(
+            legacy.comparables["listing_id"].tolist(),
+            prepared.comparables["listing_id"].tolist(),
+        )
+        pd.testing.assert_series_equal(
+            legacy.comparables["similarity_weight"].reset_index(drop=True),
+            prepared.comparables["similarity_weight"].reset_index(drop=True),
+        )
+
+        legacy_market = estimate_market_value(legacy)
+        prepared_market = estimate_market_value(prepared)
+        for field in (
+            "status", "estimated_market_price", "comparable_count", "confidence",
+            "total_similarity_weight", "mean_similarity_weight", "strong_comparable_count",
+        ):
+            self.assertEqual(getattr(legacy_market, field), getattr(prepared_market, field), field)
+        legacy_economic = calculate_economic_opportunity(target["price"], legacy_market)
+        prepared_economic = calculate_economic_opportunity(target["price"], prepared_market)
+        self.assertEqual(legacy_economic, prepared_economic)
+        eligibility = evaluate_valuation_eligibility(target)
+        self.assertEqual(
+            calculate_opportunity_score(legacy_economic, eligibility.status),
+            calculate_opportunity_score(prepared_economic, eligibility.status),
+        )
+
+    def test_prepared_universe_computes_canonical_classification_once_per_active_listing(self):
+        frame = pd.DataFrame([
+            row("target", title="BMW 320d Touring"),
+            row("candidate", title="BMW 320d Kombi"),
+            row("inactive", active=0),
+        ])
+        with (
+            patch(
+                "analytics.comparables.evaluate_valuation_eligibility",
+                wraps=evaluate_valuation_eligibility,
+            ) as eligibility,
+            patch(
+                "analytics.comparables.extract_vehicle_semantics",
+                wraps=extract_vehicle_semantics,
+            ) as semantics,
+        ):
+            universe = prepare_comparable_universe(frame)
+            self.assertEqual(eligibility.call_count, 2)
+            self.assertEqual(semantics.call_count, 2)
+            find_comparables(frame.iloc[0], universe=universe)
+            find_comparables(frame.iloc[1], universe=universe)
+            self.assertEqual(eligibility.call_count, 2)
+            self.assertEqual(semantics.call_count, 2)
 
 
 if __name__ == "__main__":

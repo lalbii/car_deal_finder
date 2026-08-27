@@ -106,8 +106,12 @@ class DashboardDataTests(unittest.TestCase):
             confidence_multiplier=1.0, risk_multiplier=1.0,
         )
         semantics = SimpleNamespace(body_style=SimpleNamespace(value="WAGON"))
+        universe = SimpleNamespace(
+            eligibility_by_id={"1": eligibility},
+            semantics_by_id={"1": semantics},
+        )
         with (
-            patch("dashboard.data.evaluate_valuation_eligibility", return_value=eligibility),
+            patch("dashboard.data.prepare_comparable_universe", return_value=universe) as prepare,
             patch("dashboard.data.find_comparables", return_value=comparable) as find,
             patch("dashboard.data.estimate_market_value", return_value=market) as estimate,
             patch("dashboard.data.calculate_economic_opportunity", return_value=economic) as economics,
@@ -115,6 +119,7 @@ class DashboardDataTests(unittest.TestCase):
             patch("dashboard.data.extract_vehicle_semantics", return_value=semantics),
         ):
             result = build_opportunity_frame(listings)
+        prepare.assert_called_once()
         find.assert_called_once()
         estimate.assert_called_once_with(comparable)
         economics.assert_called_once_with(8000, market)

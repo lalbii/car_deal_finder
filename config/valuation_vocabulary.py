@@ -10,7 +10,7 @@ import yaml
 from config.paths import VALUATION_VOCABULARY_PATH
 
 
-SUPPORTED_VERSIONS = {1}
+SUPPORTED_VERSIONS = {1, 2}
 
 
 class ValuationStatus(str, Enum):

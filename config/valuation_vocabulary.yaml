@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 rules:
   - category: transaction_type
@@ -30,6 +30,11 @@ rules:
     terms:
       - motorschaden
       - getriebeschaden
+      - kettenschaden
+      - steuerkettenschaden
+      - steuerkette gerissen
+      - motor defekt
+      - getriebe defekt
 
   - category: vehicle_use
     name: project_or_scrap

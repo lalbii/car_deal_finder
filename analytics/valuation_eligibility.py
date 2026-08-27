@@ -56,7 +56,13 @@ def _searchable_text(listing: Mapping | pd.Series) -> str:
 def _term_is_negated(text: str, start: int, term: str) -> bool:
     if term.startswith(("kein ", "ohne ", "nicht ")):
         return False
-    return _NEGATION_BEFORE_TERM.search(text[max(0, start - 20):start]) is not None
+    word_start = start
+    while word_start > 0 and text[word_start - 1].isalnum():
+        word_start -= 1
+    return (
+        _NEGATION_BEFORE_TERM.search(text[max(0, word_start - 20):word_start])
+        is not None
+    )
 
 
 def _rule_matches(text: str, rule: ValuationVocabularyRule) -> bool:

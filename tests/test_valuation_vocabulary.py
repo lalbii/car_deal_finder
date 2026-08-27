@@ -63,7 +63,7 @@ rules:
 
     def test_default_yaml_loads_with_exposed_version_and_typed_rules(self):
         vocabulary = load_valuation_vocabulary()
-        self.assertEqual(vocabulary.version, 1)
+        self.assertEqual(vocabulary.version, 2)
         self.assertEqual(len(vocabulary.hard_rules), 4)
         self.assertEqual(len(vocabulary.soft_rules), 2)
         self.assertTrue(
@@ -131,7 +131,7 @@ rules:
                 vocabulary = load_valuation_vocabulary()
             finally:
                 os.chdir(original)
-        self.assertEqual(vocabulary.version, 1)
+        self.assertEqual(vocabulary.version, 2)
 
 
 if __name__ == "__main__":

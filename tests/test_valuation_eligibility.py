@@ -42,6 +42,27 @@ class ValuationEligibilityTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 self.assert_reason(reason, ValuationStatus.INELIGIBLE, title=title)
 
+    def test_kettenschaden_regression_is_severe_mechanical_damage(self):
+        self.assert_reason(
+            ValuationReason.SEVERE_MECHANICAL_DAMAGE,
+            ValuationStatus.INELIGIBLE,
+            title="BMW E92 320d M-Paket Shadow Line | TÜV 05/2028 | Kettenschaden",
+        )
+
+    def test_new_severe_damage_terms_are_case_and_spacing_normalized(self):
+        for title in (
+            "BMW 320d KETTENSCHADEN",
+            "BMW 320d Steuerkettenschaden",
+            "BMW 320d Steuerkette gerissen",
+            "BMW 320d Steuerkette   gerissen",
+        ):
+            with self.subTest(title=title):
+                self.assert_reason(
+                    ValuationReason.SEVERE_MECHANICAL_DAMAGE,
+                    ValuationStatus.INELIGIBLE,
+                    title=title,
+                )
+
     def test_placeholder_price_is_hard_exclusion(self):
         self.assert_reason(
             ValuationReason.PLACEHOLDER_PRICE,
@@ -75,6 +96,12 @@ class ValuationEligibilityTests(unittest.TestCase):
         for title in (
             "BMW 320d kein Motorschaden",
             "BMW 320d ohne Motorschaden",
+            "BMW 320d kein Kettenschaden",
+            "BMW 320d ohne Kettenschaden",
+            "BMW 320d kein Steuerkettenschaden",
+            "BMW 320d ohne Steuerkettenschaden",
+            "BMW 320d kein Motor defekt",
+            "BMW 320d kein Getriebe defekt",
             "BMW 320d kein Unfall",
             "BMW 320d unfallfrei",
         ):

@@ -1,0 +1,36 @@
+version: 1
+
+body_style:
+  WAGON:
+    - touring
+    - kombi
+    - estate
+  SEDAN:
+    - limousine
+    - sedan
+  COUPE:
+    - coupe
+    - coupé
+  CONVERTIBLE:
+    - cabrio
+    - cabriolet
+    - convertible
+  HATCHBACK:
+    - hatchback
+    - schrägheck
+  SUV:
+    - suv
+  VAN:
+    - van
+
+drivetrain:
+  AWD:
+    - xdrive
+    - x-drive
+    - quattro
+    - 4matic
+    - 4motion
+    - awd
+    - allrad
+  RWD:
+    - heckantrieb

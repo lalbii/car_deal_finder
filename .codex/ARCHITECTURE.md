@@ -622,6 +622,16 @@ Python owns text normalization, matching, negation, precedence, and canonical
 classification; vocabulary changes should normally edit YAML rather than the
 classifier. A later historical-snapshot phase may record the vocabulary version.
 
+## Generic Vehicle Semantics
+
+Generic title semantics are extracted through a brand-independent, deterministic
+pipeline. `config/vehicle_semantics.yaml` is the versioned vocabulary source of
+truth, while Python owns normalization, matching, and conservative conflict
+handling. `UNKNOWN` is preferred whenever explicit title evidence is missing or
+conflicting; there is no brand, chassis-code, generation, model, or year-based
+inference. Body style and drivetrain semantics are not persisted yet, and
+Comparable Engine v3 will consume them in a later phase.
+
 ---
 
 # Testing Priorities

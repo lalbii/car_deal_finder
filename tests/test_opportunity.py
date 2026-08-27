@@ -9,8 +9,13 @@ from analytics.market_value import (
 )
 from analytics.opportunity import (
     EconomicOpportunityStatus,
+    OpportunityScoreStatus,
     calculate_economic_opportunity,
+    calculate_opportunity_score,
+    discount_component,
+    margin_component,
 )
+from analytics.valuation_eligibility import ValuationStatus
 
 
 def market_value(
@@ -101,6 +106,125 @@ class EconomicOpportunityTests(unittest.TestCase):
         first = calculate_economic_opportunity(8_000, market_value())
         second = calculate_economic_opportunity(8_000, market_value())
         self.assertEqual(first, second)
+
+
+def score(
+    asking,
+    estimated,
+    *,
+    confidence=ValuationConfidence.HIGH,
+    eligibility=ValuationStatus.ELIGIBLE,
+):
+    economic = calculate_economic_opportunity(
+        asking, market_value(estimated, confidence=confidence)
+    )
+    return calculate_opportunity_score(economic, eligibility)
+
+
+class OpportunityScoreV2Tests(unittest.TestCase):
+    def test_discount_component_boundaries_and_saturation(self):
+        expected = {
+            -20: 0,
+            -15: 0,
+            0: 40,
+            10: 60,
+            20: 80,
+            30: 100,
+            70: 100,
+        }
+        for value, component in expected.items():
+            with self.subTest(value=value):
+                self.assertEqual(discount_component(value), component)
+
+    def test_margin_component_boundaries_and_saturation(self):
+        expected = {
+            -1_000: 0,
+            0: 0,
+            500: 30,
+            1_000: 50,
+            2_000: 80,
+            3_000: 100,
+            10_000: 100,
+        }
+        for value, component in expected.items():
+            with self.subTest(value=value):
+                self.assertEqual(margin_component(value), component)
+
+    def test_same_discount_larger_euro_gap_scores_higher(self):
+        smaller = score(4_000, 5_000)
+        larger = score(12_000, 15_000)
+        self.assertGreater(larger.opportunity_score, smaller.opportunity_score)
+
+    def test_same_gap_larger_discount_scores_higher(self):
+        larger_discount = score(4_000, 5_000)
+        smaller_discount = score(10_000, 11_000)
+        self.assertGreater(
+            larger_discount.opportunity_score, smaller_discount.opportunity_score
+        )
+
+    def test_confidence_ordering(self):
+        high = score(8_000, 10_000, confidence=ValuationConfidence.HIGH)
+        medium = score(8_000, 10_000, confidence=ValuationConfidence.MEDIUM)
+        low = score(8_000, 10_000, confidence=ValuationConfidence.LOW)
+        self.assertGreater(high.opportunity_score, medium.opportunity_score)
+        self.assertGreater(medium.opportunity_score, low.opportunity_score)
+        self.assertEqual(low.status, OpportunityScoreStatus.LOW_CONFIDENCE)
+
+    def test_overpriced_vehicle_scores_low(self):
+        result = score(12_000, 10_000)
+        self.assertLessEqual(result.opportunity_score, 10)
+
+    def test_neutral_vehicle_is_weak_not_strong(self):
+        result = score(10_000, 10_000)
+        self.assertEqual(result.opportunity_score, 28)
+        self.assertLess(result.opportunity_score, 40)
+
+    def test_extreme_discount_saturates(self):
+        saturated = score(7_000, 10_000)
+        extreme = score(3_000, 10_000)
+        self.assertEqual(saturated.opportunity_score, 100)
+        self.assertEqual(extreme.opportunity_score, 100)
+
+    def test_unavailable_valuation_has_no_score(self):
+        economic = calculate_economic_opportunity(
+            8_000,
+            market_value(
+                None,
+                status=MarketValueStatus.INSUFFICIENT_COMPARABLES,
+                confidence=ValuationConfidence.UNAVAILABLE,
+            ),
+        )
+        result = calculate_opportunity_score(economic, ValuationStatus.ELIGIBLE)
+        self.assertEqual(result.status, OpportunityScoreStatus.UNAVAILABLE)
+        self.assertIsNone(result.opportunity_score)
+
+    def test_ineligible_target_has_no_score(self):
+        result = score(8_000, 10_000, eligibility=ValuationStatus.INELIGIBLE)
+        self.assertEqual(result.status, OpportunityScoreStatus.INELIGIBLE)
+        self.assertIsNone(result.opportunity_score)
+
+    def test_risk_target_is_explicitly_penalized(self):
+        clean = score(8_000, 10_000)
+        risk = score(
+            8_000, 10_000, eligibility=ValuationStatus.ELIGIBLE_WITH_RISK
+        )
+        self.assertEqual(risk.status, OpportunityScoreStatus.RISK_ADJUSTED)
+        self.assertAlmostEqual(risk.opportunity_score, clean.opportunity_score * 0.60)
+
+    def test_score_is_deterministic_clamped_and_components_reconcile(self):
+        first = score(8_000, 10_000, confidence=ValuationConfidence.MEDIUM)
+        second = score(8_000, 10_000, confidence=ValuationConfidence.MEDIUM)
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(first.opportunity_score, 0)
+        self.assertLessEqual(first.opportunity_score, 100)
+        expected_base = 0.70 * first.discount_component + 0.30 * first.margin_component
+        self.assertAlmostEqual(first.base_opportunity, expected_base)
+        self.assertAlmostEqual(
+            first.opportunity_score,
+            first.base_opportunity
+            * first.confidence_multiplier
+            * first.risk_multiplier,
+        )
 
 
 if __name__ == "__main__":

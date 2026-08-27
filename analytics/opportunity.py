@@ -58,8 +58,25 @@ class OpportunityScoreResult:
     valuation_status: ValuationStatus
 
 
-_DISCOUNT_POINTS = ((-15.0, 0.0), (0.0, 40.0), (10.0, 60.0), (20.0, 80.0), (30.0, 100.0))
-_MARGIN_POINTS = ((0.0, 0.0), (500.0, 30.0), (1_000.0, 50.0), (2_000.0, 80.0), (3_000.0, 100.0))
+_DISCOUNT_POINTS = (
+    (-15.0, 0.0),
+    (0.0, 40.0),
+    (10.0, 58.0),
+    (20.0, 72.0),
+    (30.0, 84.0),
+    (45.0, 94.0),
+    (60.0, 100.0),
+)
+_MARGIN_POINTS = (
+    (0.0, 0.0),
+    (500.0, 20.0),
+    (1_000.0, 35.0),
+    (2_000.0, 55.0),
+    (3_000.0, 68.0),
+    (5_000.0, 82.0),
+    (8_000.0, 92.0),
+    (12_000.0, 100.0),
+)
 _CONFIDENCE_MULTIPLIERS = {
     ValuationConfidence.HIGH: 1.00,
     ValuationConfidence.MEDIUM: 0.85,
@@ -160,7 +177,7 @@ def calculate_opportunity_score(
     """Return an explainable 0..100 sourcing heuristic, not probability or profit."""
     common = {
         "target_listing_id": economic.target_listing_id,
-        "score_version": "2.0",
+        "score_version": "2.1",
         "discount_percent": economic.discount_percent,
         "market_gap_eur": economic.market_gap_eur,
         "valuation_confidence": economic.valuation_confidence,

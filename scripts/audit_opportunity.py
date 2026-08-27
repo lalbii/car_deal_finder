@@ -18,6 +18,35 @@ from normalization.vehicle_fields import registration_year
 from scripts.audit_comparables import load_listings_read_only
 
 
+_V2_DISCOUNT_POINTS = (
+    (-15.0, 0.0), (0.0, 40.0), (10.0, 60.0), (20.0, 80.0), (30.0, 100.0)
+)
+_V2_MARGIN_POINTS = (
+    (0.0, 0.0), (500.0, 30.0), (1_000.0, 50.0), (2_000.0, 80.0), (3_000.0, 100.0)
+)
+_CONFIDENCE_MULTIPLIERS = {"HIGH": 1.0, "MEDIUM": 0.85, "LOW": 0.65}
+
+
+def _legacy_component(value: float, points: tuple[tuple[float, float], ...]) -> float:
+    if value <= points[0][0]:
+        return points[0][1]
+    if value >= points[-1][0]:
+        return points[-1][1]
+    for (left_x, left_y), (right_x, right_y) in zip(points, points[1:]):
+        if value <= right_x:
+            return left_y + (value - left_x) / (right_x - left_x) * (right_y - left_y)
+    raise AssertionError("Legacy interpolation failed")
+
+
+def _legacy_v2_score(economic) -> float | None:
+    multiplier = _CONFIDENCE_MULTIPLIERS.get(economic.valuation_confidence.value)
+    if economic.discount_percent is None or economic.market_gap_eur is None or multiplier is None:
+        return None
+    discount = _legacy_component(economic.discount_percent, _V2_DISCOUNT_POINTS)
+    margin = _legacy_component(economic.market_gap_eur, _V2_MARGIN_POINTS)
+    return max(0.0, min(100.0, (0.70 * discount + 0.30 * margin) * multiplier))
+
+
 def _money(value) -> str:
     return "—" if value is None or pd.isna(value) else f"€{value:,.0f}"
 
@@ -59,7 +88,7 @@ def audit_listing(listing_id: str, listings: pd.DataFrame) -> int:
     print(f"Asking: {_money(economic.asking_price)}")
     print(f"Market gap: {_signed_money(economic.market_gap_eur)}")
     print(f"Discount: {_signed_percent(economic.discount_percent)}")
-    print("\nOPPORTUNITY SCORE v2\n")
+    print(f"\nOPPORTUNITY SCORE v{score.score_version}\n")
     print(f"Status: {score.status.value}")
     print(f"Discount component: {score.discount_component if score.discount_component is not None else '—'}")
     print(f"Margin component: {score.margin_component if score.margin_component is not None else '—'}")
@@ -97,7 +126,10 @@ def audit_all(listings: pd.DataFrame, top: int) -> int:
                 "market_gap_eur": economic.market_gap_eur,
                 "discount_percent": economic.discount_percent,
                 "confidence": economic.valuation_confidence.value,
+                "discount_component": score.discount_component,
+                "margin_component": score.margin_component,
                 "opportunity_score": score.opportunity_score,
+                "old_opportunity_score": _legacy_v2_score(economic),
                 "score_status": score.status.value,
             }
         )
@@ -113,11 +145,40 @@ def audit_all(listings: pd.DataFrame, top: int) -> int:
     print(f"Valued listings: {valued}")
     print(f"Opportunity score available: {scored}")
     print(f"Unavailable valuations: {len(clean) - valued}")
-    print(f"\nTOP {min(top, len(available))} OPPORTUNITIES\n")
+    old_available = results.dropna(subset=["old_opportunity_score"]).sort_values(
+        ["old_opportunity_score", "discount_percent", "market_gap_eur", "listing_id"],
+        ascending=[False, False, False, True],
+        kind="mergesort",
+    ).copy()
+    available = available.copy()
+    old_available["old_rank"] = range(1, len(old_available) + 1)
+    available["new_rank"] = range(1, len(available) + 1)
+    previous_top = old_available.head(20).merge(
+        available[["listing_id", "new_rank", "opportunity_score"]].rename(
+            columns={"opportunity_score": "new_opportunity_score"}
+        ),
+        on="listing_id",
+        how="left",
+    )
+    old_ties = int(old_available.head(20)["old_opportunity_score"].duplicated(keep=False).sum())
+    new_ties = int(available.head(20)["opportunity_score"].duplicated(keep=False).sum())
+    print("\nBEFORE / AFTER TOP-20 PLATEAU\n")
+    print(f"Exact tied listings before: {old_ties}")
+    print(f"Exact tied listings after: {new_ties}")
+    print("\nPREVIOUS TOP 20 RANK MOVEMENT\n")
+    print(
+        previous_top[
+            [
+                "listing_id", "old_rank", "new_rank",
+                "old_opportunity_score", "new_opportunity_score",
+            ]
+        ].to_string(index=False)
+    )
+    print(f"\nTOP {min(top, len(available))} OPPORTUNITY SCORE v2.1\n")
     columns = [
         "listing_id", "title", "year", "mileage_km", "asking_price",
         "estimated_market_price", "market_gap_eur", "discount_percent",
-        "confidence", "opportunity_score",
+        "confidence", "discount_component", "margin_component", "opportunity_score",
     ]
     if available.empty:
         print("No scores available.")
@@ -127,7 +188,7 @@ def audit_all(listings: pd.DataFrame, top: int) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Audit Opportunity Score v2")
+    parser = argparse.ArgumentParser(description="Audit Opportunity Score v2.1")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--listing-id")
     group.add_argument("--all", action="store_true", help="Score all active clean listings")

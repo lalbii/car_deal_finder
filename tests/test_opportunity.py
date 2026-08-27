@@ -121,15 +121,17 @@ def score(
     return calculate_opportunity_score(economic, eligibility)
 
 
-class OpportunityScoreV2Tests(unittest.TestCase):
+class OpportunityScoreV21Tests(unittest.TestCase):
     def test_discount_component_boundaries_and_saturation(self):
         expected = {
             -20: 0,
             -15: 0,
             0: 40,
-            10: 60,
-            20: 80,
-            30: 100,
+            10: 58,
+            20: 72,
+            30: 84,
+            45: 94,
+            60: 100,
             70: 100,
         }
         for value, component in expected.items():
@@ -140,24 +142,31 @@ class OpportunityScoreV2Tests(unittest.TestCase):
         expected = {
             -1_000: 0,
             0: 0,
-            500: 30,
-            1_000: 50,
-            2_000: 80,
-            3_000: 100,
-            10_000: 100,
+            500: 20,
+            1_000: 35,
+            2_000: 55,
+            3_000: 68,
+            5_000: 82,
+            8_000: 92,
+            12_000: 100,
+            15_000: 100,
         }
         for value, component in expected.items():
             with self.subTest(value=value):
                 self.assertEqual(margin_component(value), component)
 
+    def test_interpolation_between_breakpoints(self):
+        self.assertEqual(discount_component(5), 49)
+        self.assertEqual(margin_component(750), 27.5)
+
     def test_same_discount_larger_euro_gap_scores_higher(self):
-        smaller = score(4_000, 5_000)
-        larger = score(12_000, 15_000)
+        smaller = score(7_000, 10_000)
+        larger = score(70_000 / 3, 100_000 / 3)
         self.assertGreater(larger.opportunity_score, smaller.opportunity_score)
 
     def test_same_gap_larger_discount_scores_higher(self):
-        larger_discount = score(4_000, 5_000)
-        smaller_discount = score(10_000, 11_000)
+        larger_discount = score(2_000, 5_000)
+        smaller_discount = score(7_000, 10_000)
         self.assertGreater(
             larger_discount.opportunity_score, smaller_discount.opportunity_score
         )
@@ -179,11 +188,20 @@ class OpportunityScoreV2Tests(unittest.TestCase):
         self.assertEqual(result.opportunity_score, 28)
         self.assertLess(result.opportunity_score, 40)
 
-    def test_extreme_discount_saturates(self):
-        saturated = score(7_000, 10_000)
-        extreme = score(3_000, 10_000)
-        self.assertEqual(saturated.opportunity_score, 100)
+    def test_strong_opportunity_does_not_saturate_but_extreme_can(self):
+        strong = score(7_000, 10_000)
+        extreme = score(8_000, 20_000)
+        self.assertLess(strong.opportunity_score, 100)
         self.assertEqual(extreme.opportunity_score, 100)
+
+    def test_medium_confidence_economics_retain_resolution(self):
+        strong = score(7_000, 10_000, confidence=ValuationConfidence.MEDIUM)
+        extreme = score(8_000, 20_000, confidence=ValuationConfidence.MEDIUM)
+        self.assertGreater(extreme.opportunity_score, strong.opportunity_score)
+        self.assertNotEqual(extreme.opportunity_score, strong.opportunity_score)
+
+    def test_score_version_is_updated(self):
+        self.assertEqual(score(7_000, 10_000).score_version, "2.1")
 
     def test_unavailable_valuation_has_no_score(self):
         economic = calculate_economic_opportunity(

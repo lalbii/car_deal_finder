@@ -508,6 +508,11 @@ Opportunity score:        82 / 100
 
 The purpose is to help manual decision-making.
 
+Opportunity Score v2.1 retains the explainable 70% discount-component and 30%
+asking-market-gap-component combination. Both components use deterministic
+piecewise-linear mappings with gradual saturation; confidence and canonical
+eligibility-risk multipliers remain separate and explicit.
+
 The application is not expected to automatically purchase or contact sellers.
 
 ---

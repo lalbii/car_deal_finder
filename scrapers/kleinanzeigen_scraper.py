@@ -24,7 +24,11 @@ from parsers.search_parser import (
     classify_search_page,
     parse_search_page,
 )
-from parsers.status_parser import ListingStatus, interpret_listing_status
+from parsers.status_parser import (
+    ListingStatus,
+    interpret_listing_status,
+    is_listing_detail_url,
+)
 from scrapers.browser import launch_browser
 from scrapers.circuit_breaker import BlockingCircuitBreaker, CircuitOpenError
 from scrapers.failures import FailureCategory, FetchFailure, FetchResult
@@ -307,17 +311,18 @@ def run(
                 summary.pages_fetched == search_config.max_pages
                 and summary.stopped_reason is None
             )
-            if complete_search_coverage:
-                for listing in missing_active:
-                    if should_check_status(listing, run_now, status_interval):
-                        status_candidates.append(listing)
-                    else:
-                        summary.skipped_recent_status_checks += 1
-            elif missing_active:
+            for listing in missing_active:
+                if should_check_status(listing, run_now, status_interval):
+                    status_candidates.append(listing)
+                else:
+                    summary.skipped_recent_status_checks += 1
+            if not complete_search_coverage and missing_active:
                 logger.warning(
-                    "search=%s status_checks_deferred=true reason=incomplete_search_coverage "
+                    "search=%s incomplete_search_coverage=true "
+                    "stale_missing_status_checks_still_scheduled=%s "
                     "missing_active=%s pages_fetched=%s/%s",
                     search_config.name,
+                    len(status_candidates),
                     len(missing_active),
                     summary.pages_fetched,
                     search_config.max_pages,
@@ -378,7 +383,11 @@ def run(
 
                 try:
                     status_decision = interpret_listing_status(
-                        fetch.html, fetch.status_code
+                        fetch.html,
+                        fetch.status_code,
+                        requested_url=listing.url,
+                        final_url=fetch.final_url,
+                        listing_id=listing.listing_id,
                     )
                 except Exception as exc:
                     summary.add_failure(FailureCategory.PARSER_ERROR.value)
@@ -460,6 +469,17 @@ def run(
             for index, listing in enumerate(status_candidates, start=1):
                 if summary.stopped_reason:
                     break
+                if not is_listing_detail_url(
+                    listing.get("url"), listing.get("listing_id")
+                ):
+                    summary.add_failure(FailureCategory.UNEXPECTED_PAGE.value)
+                    logger.warning(
+                        "search=%s listing_id=%s status=UNKNOWN "
+                        "reason=invalid_listing_detail_url database_unchanged=true",
+                        search_config.name,
+                        listing.get("listing_id"),
+                    )
+                    continue
                 if prior_detail_or_status_request and runtime_config.detail_delay_seconds:
                     sleep(runtime_config.detail_delay_seconds)
                 prior_detail_or_status_request = True
@@ -498,7 +518,11 @@ def run(
 
                 try:
                     status_decision = interpret_listing_status(
-                        fetch.html, fetch.status_code
+                        fetch.html,
+                        fetch.status_code,
+                        requested_url=listing["url"],
+                        final_url=fetch.final_url,
+                        listing_id=listing["listing_id"],
                     )
                 except Exception as exc:
                     summary.add_failure(FailureCategory.PARSER_ERROR.value)

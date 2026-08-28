@@ -98,6 +98,10 @@ def navigate_with_retry(
 ) -> FetchResult:
     prefix = _context_text(context)
 
+    def final_url() -> str:
+        value = getattr(page, "url", None)
+        return value if isinstance(value, str) and value else url
+
     for attempt in range(1, runtime_config.max_attempts + 1):
         if circuit_breaker:
             circuit_breaker.ensure_closed()
@@ -119,7 +123,7 @@ def navigate_with_retry(
             if status_code in INACTIVE_STATUSES:
                 if circuit_breaker:
                     circuit_breaker.record_success()
-                return FetchResult(page.content(), status_code, attempt)
+                return FetchResult(page.content(), status_code, attempt, final_url())
             if status_code == 403:
                 raise FetchFailure(
                     FailureCategory.ANTI_BOT_SUSPECTED,
@@ -204,7 +208,7 @@ def navigate_with_retry(
                 )
             if circuit_breaker:
                 circuit_breaker.record_success()
-            return FetchResult(html, status_code, attempt)
+            return FetchResult(html, status_code, attempt, final_url())
         except PlaywrightTimeoutError as exc:
             failure = FetchFailure(
                 FailureCategory.TIMEOUT,

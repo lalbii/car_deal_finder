@@ -7,7 +7,11 @@ from playwright.sync_api import sync_playwright
 from models.run_summary import ActiveCheckSummary
 from models.runtime_config import RuntimeConfig
 from operations.logging_config import get_logger
-from parsers.status_parser import ListingStatus, interpret_listing_status
+from parsers.status_parser import (
+    ListingStatus,
+    interpret_listing_status,
+    is_listing_detail_url,
+)
 from scrapers.browser import launch_browser
 from scrapers.circuit_breaker import BlockingCircuitBreaker, CircuitOpenError
 from scrapers.failures import FailureCategory, FetchFailure
@@ -44,6 +48,16 @@ def run_active_check(
             for index, listing in enumerate(active_listings, start=1):
                 listing_id = listing["listing_id"]
                 url = listing["url"]
+                if not is_listing_detail_url(url, listing_id):
+                    summary.unknown += 1
+                    summary.add_failure(FailureCategory.UNEXPECTED_PAGE.value)
+                    logger.warning(
+                        "listing_id=%s url=%s status=UNKNOWN "
+                        "reason=invalid_listing_detail_url database_unchanged=true",
+                        listing_id,
+                        url,
+                    )
+                    continue
                 if index > 1 and runtime_config.detail_delay_seconds:
                     sleep(runtime_config.detail_delay_seconds)
                 summary.status_requests += 1
@@ -91,7 +105,11 @@ def run_active_check(
 
                     try:
                         status_decision = interpret_listing_status(
-                            fetch.html, fetch.status_code
+                            fetch.html,
+                            fetch.status_code,
+                            requested_url=url,
+                            final_url=fetch.final_url,
+                            listing_id=listing_id,
                         )
                     except Exception as exc:
                         summary.unknown += 1

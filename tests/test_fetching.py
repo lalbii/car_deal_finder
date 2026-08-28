@@ -15,11 +15,17 @@ class FakeResponse:
 
 
 class FakePage:
-    def __init__(self, outcomes, html="<html><h1>BMW 320d</h1></html>"):
+    def __init__(
+        self,
+        outcomes,
+        html="<html><h1>BMW 320d</h1></html>",
+        final_url=None,
+    ):
         self.outcomes = list(outcomes)
         self.html = html
         self.goto_calls = 0
         self.waits = []
+        self.url = final_url
 
     def goto(self, url, **kwargs):
         self.goto_calls += 1
@@ -98,6 +104,20 @@ class FetchRetryTests(unittest.TestCase):
         self.assertEqual(result.status_code, 404)
         self.assertEqual(page.goto_calls, 1)
         self.assertEqual(sleeps, [])
+
+    def test_final_browser_url_is_returned_for_redirect_classification(self):
+        final_url = "https://www.kleinanzeigen.de/s-autos/oberhausen/c216l1281"
+        page = FakePage([200], final_url=final_url)
+
+        result = navigate_with_retry(
+            page,
+            "https://www.kleinanzeigen.de/s-anzeige/car/123-216-1",
+            self.runtime,
+            logger=self.logger,
+            sleep=lambda delay: None,
+        )
+
+        self.assertEqual(result.final_url, final_url)
 
     def test_challenge_page_is_classified_without_retry(self):
         page = FakePage([200], html="<html><title>Captcha</title></html>")

@@ -7,6 +7,9 @@ from scrapers.active_checker import run_active_check
 from scrapers.failures import FailureCategory, FetchFailure
 
 
+DETAIL_URL = "https://www.kleinanzeigen.de/s-anzeige/bmw-320d/123-216-1234"
+
+
 class ActiveCheckerSafetyTests(unittest.TestCase):
     @patch("scrapers.active_checker.mark_listing_inactive")
     @patch("scrapers.active_checker.mark_listing_checked")
@@ -24,7 +27,7 @@ class ActiveCheckerSafetyTests(unittest.TestCase):
         mark_listing_inactive,
     ):
         get_active_listings.return_value = [
-            {"listing_id": "123", "url": "https://example.test/123"}
+            {"listing_id": "123", "url": DETAIL_URL}
         ]
         playwright = Mock()
         sync_playwright.return_value.__enter__.return_value = playwright

@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from models.runtime_config import RuntimeConfig
 from models.search_config import SearchConfig
-from scrapers.failures import FetchResult
+from scrapers.failures import FailureCategory, FetchFailure, FetchResult
 from scrapers.kleinanzeigen_scraper import run
 
 
@@ -213,6 +213,221 @@ class ScrapeSchedulingTests(unittest.TestCase):
         self.assertEqual(summary.missing_active_candidates, 1)
         self.assertEqual(summary.status_requests, 0)
         self.assertEqual(summary.skipped_recent_status_checks, 1)
+
+    def test_stale_missing_listing_confirmed_active_updates_checked_time(self):
+        listing_id = "9876543210"
+        detail_url = (
+            "https://www.kleinanzeigen.de/s-anzeige/bmw-320d/"
+            f"{listing_id}-216-1234"
+        )
+        known = {
+            "listing_id": listing_id,
+            "url": detail_url,
+            "is_active": 1,
+            "last_checked_at": (self.now - timedelta(days=2)).isoformat(),
+        }
+        empty_search = "<html><p>Keine Anzeigen gefunden</p></html>"
+        with ExitStack() as stack:
+            self._common_patches(stack, [known])
+            self._browser_patches(stack)
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_search_page",
+                    return_value=FetchResult(empty_search, 200, 1),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_detail_page",
+                    return_value=FetchResult(self.detail_html, 200, 1, detail_url),
+                )
+            )
+            mark_checked = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_checked")
+            )
+            mark_inactive = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_inactive")
+            )
+
+            summary = run(self.search_config, self.runtime, logger=self.logger, now=self.now)
+
+        mark_checked.assert_called_once_with(listing_id, checked_at=self.now)
+        mark_inactive.assert_not_called()
+        self.assertEqual(summary.status_requests, 1)
+
+    def test_stale_missing_redirect_to_category_is_marked_inactive(self):
+        listing_id = "9876543210"
+        detail_url = (
+            "https://www.kleinanzeigen.de/s-anzeige/bmw-320d/"
+            f"{listing_id}-216-1234"
+        )
+        known = {
+            "listing_id": listing_id,
+            "url": detail_url,
+            "is_active": 1,
+            "last_checked_at": (self.now - timedelta(days=2)).isoformat(),
+        }
+        empty_search = "<html><p>Keine Anzeigen gefunden</p></html>"
+        category_url = "https://www.kleinanzeigen.de/s-autos/oberhausen/c216l1281"
+        with ExitStack() as stack:
+            self._common_patches(stack, [known])
+            self._browser_patches(stack)
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_search_page",
+                    return_value=FetchResult(empty_search, 200, 1),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_detail_page",
+                    return_value=FetchResult(
+                        "<html><h1>Autos in Oberhausen</h1></html>",
+                        200,
+                        1,
+                        category_url,
+                    ),
+                )
+            )
+            mark_checked = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_checked")
+            )
+            mark_inactive = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_inactive")
+            )
+
+            summary = run(self.search_config, self.runtime, logger=self.logger, now=self.now)
+
+        mark_inactive.assert_called_once_with(listing_id, checked_at=self.now)
+        mark_checked.assert_not_called()
+        self.assertEqual(summary.confirmed_inactive, 1)
+
+    def test_unknown_status_leaves_lifecycle_unchanged(self):
+        listing_id = "9876543210"
+        detail_url = (
+            "https://www.kleinanzeigen.de/s-anzeige/bmw-320d/"
+            f"{listing_id}-216-1234"
+        )
+        known = {
+            "listing_id": listing_id,
+            "url": detail_url,
+            "is_active": 1,
+            "last_checked_at": (self.now - timedelta(days=2)).isoformat(),
+        }
+        empty_search = "<html><p>Keine Anzeigen gefunden</p></html>"
+        with ExitStack() as stack:
+            self._common_patches(stack, [known])
+            self._browser_patches(stack)
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_search_page",
+                    return_value=FetchResult(empty_search, 200, 1),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_detail_page",
+                    return_value=FetchResult(
+                        "<html><h1>Generic page</h1></html>", 200, 1, detail_url
+                    ),
+                )
+            )
+            mark_checked = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_checked")
+            )
+            mark_inactive = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_inactive")
+            )
+
+            run(self.search_config, self.runtime, logger=self.logger, now=self.now)
+
+        mark_checked.assert_not_called()
+        mark_inactive.assert_not_called()
+
+    def test_invalid_stored_url_is_not_requested_or_used_as_status_evidence(self):
+        known = {
+            "listing_id": "9876543210",
+            "url": "https://www.kleinanzeigen.de/s-autos/oberhausen/c216l1281",
+            "is_active": 1,
+            "last_checked_at": (self.now - timedelta(days=2)).isoformat(),
+        }
+        empty_search = "<html><p>Keine Anzeigen gefunden</p></html>"
+        with ExitStack() as stack:
+            self._common_patches(stack, [known])
+            self._browser_patches(stack)
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_search_page",
+                    return_value=FetchResult(empty_search, 200, 1),
+                )
+            )
+            fetch_detail = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.fetch_detail_page")
+            )
+            mark_checked = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_checked")
+            )
+            mark_inactive = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_inactive")
+            )
+
+            summary = run(self.search_config, self.runtime, logger=self.logger, now=self.now)
+
+        fetch_detail.assert_not_called()
+        mark_checked.assert_not_called()
+        mark_inactive.assert_not_called()
+        self.assertEqual(summary.status_requests, 0)
+
+    def test_incomplete_search_coverage_does_not_starve_stale_status_check(self):
+        search_config = SearchConfig(
+            name="test_search",
+            query="bmw-320d",
+            region="nordrhein-westfalen",
+            category="k0c216l928",
+            max_pages=2,
+        )
+        listing_id = "9876543210"
+        detail_url = (
+            "https://www.kleinanzeigen.de/s-anzeige/bmw-320d/"
+            f"{listing_id}-216-1234"
+        )
+        known = {
+            "listing_id": listing_id,
+            "url": detail_url,
+            "is_active": 1,
+            "last_checked_at": (self.now - timedelta(days=2)).isoformat(),
+        }
+        empty_search = "<html><p>Keine Anzeigen gefunden</p></html>"
+        page_failure = FetchFailure(
+            FailureCategory.NETWORK_ERROR,
+            "page two failed",
+            retryable=True,
+        )
+        with ExitStack() as stack:
+            self._common_patches(stack, [known])
+            self._browser_patches(stack)
+            stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_search_page",
+                    side_effect=[FetchResult(empty_search, 200, 1), page_failure],
+                )
+            )
+            fetch_detail = stack.enter_context(
+                patch(
+                    "scrapers.kleinanzeigen_scraper.fetch_detail_page",
+                    return_value=FetchResult(self.detail_html, 200, 1, detail_url),
+                )
+            )
+            mark_checked = stack.enter_context(
+                patch("scrapers.kleinanzeigen_scraper.mark_listing_checked")
+            )
+
+            summary = run(search_config, self.runtime, logger=self.logger, now=self.now)
+
+        fetch_detail.assert_called_once()
+        mark_checked.assert_called_once_with(listing_id, checked_at=self.now)
+        self.assertEqual(summary.pages_fetched, 1)
+        self.assertEqual(summary.status_requests, 1)
 
     def test_circuit_open_stops_search_and_does_not_modify_lifecycle(self):
         search_config = SearchConfig(

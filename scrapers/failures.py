@@ -20,6 +20,7 @@ class FetchResult:
     html: str
     status_code: int
     attempts: int
+    final_url: str | None = None
 
 
 class FetchFailure(RuntimeError):

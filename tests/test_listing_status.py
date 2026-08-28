@@ -1,6 +1,15 @@
 import unittest
 
-from parsers.status_parser import ListingStatus, interpret_listing_status
+from parsers.status_parser import (
+    ListingStatus,
+    interpret_listing_status,
+    is_listing_detail_url,
+)
+
+
+DETAIL_URL = (
+    "https://www.kleinanzeigen.de/s-anzeige/bmw-320d/1234567890-216-1234"
+)
 
 
 def live_listing_html(description: str = "Gepflegtes Fahrzeug") -> str:
@@ -101,6 +110,63 @@ class ListingStatusTests(unittest.TestCase):
 
         self.assertEqual(decision.status, ListingStatus.UNKNOWN)
         self.assertEqual(decision.reason, "missing_live_listing_content")
+
+    def test_detail_redirect_to_category_is_confirmed_inactive(self):
+        decision = interpret_listing_status(
+            "<html><h1>Autos in Oberhausen</h1></html>",
+            200,
+            requested_url=DETAIL_URL,
+            final_url="https://www.kleinanzeigen.de/s-autos/oberhausen/c216l1281",
+            listing_id="1234567890",
+        )
+
+        self.assertEqual(decision.status, ListingStatus.INACTIVE)
+        self.assertEqual(decision.reason, "redirected_to_search_or_category")
+
+    def test_invalid_requested_url_cannot_confirm_active_or_inactive(self):
+        decision = interpret_listing_status(
+            live_listing_html(),
+            404,
+            requested_url="https://www.kleinanzeigen.de/s-autos/c216",
+            final_url="https://www.kleinanzeigen.de/s-autos/c216",
+            listing_id="1234567890",
+        )
+
+        self.assertEqual(decision.status, ListingStatus.UNKNOWN)
+        self.assertEqual(decision.reason, "invalid_listing_detail_url")
+
+    def test_category_redirect_cannot_confirm_active_even_with_detail_selectors(self):
+        decision = interpret_listing_status(
+            live_listing_html(),
+            200,
+            requested_url=DETAIL_URL,
+            final_url="https://www.kleinanzeigen.de/s-autos/oberhausen/c216l1281",
+            listing_id="1234567890",
+        )
+
+        self.assertEqual(decision.status, ListingStatus.INACTIVE)
+        self.assertEqual(decision.reason, "redirected_to_search_or_category")
+
+    def test_unexpected_redirect_is_unknown(self):
+        decision = interpret_listing_status(
+            "<html><h1>Generic page heading</h1></html>",
+            200,
+            requested_url=DETAIL_URL,
+            final_url="https://example.test/unrelated",
+            listing_id="1234567890",
+        )
+
+        self.assertEqual(decision.status, ListingStatus.UNKNOWN)
+        self.assertEqual(decision.reason, "unexpected_redirect")
+
+    def test_canonical_detail_url_validation(self):
+        self.assertTrue(is_listing_detail_url(DETAIL_URL, "1234567890"))
+        self.assertFalse(
+            is_listing_detail_url(
+                "https://www.kleinanzeigen.de/s-autos/oberhausen/c216l1281",
+                "1234567890",
+            )
+        )
 
 
 if __name__ == "__main__":

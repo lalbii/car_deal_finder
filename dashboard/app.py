@@ -13,6 +13,7 @@ import streamlit as st
 from dashboard.data import clear_dashboard_cache
 from dashboard.views import (
     render_collector_health,
+    render_inactive_listings,
     render_listing_detail,
     render_market_overview,
     render_opportunities,
@@ -30,10 +31,11 @@ if "view" not in st.session_state:
 
 st.sidebar.title("Kleinanzeigen Deal Finder")
 
+views = ["Opportunities", "Inactive Listings", "Listing Detail", "Market / Overview"]
 view = st.sidebar.radio(
     "View",
-    ["Opportunities", "Listing Detail", "Market / Overview"],
-    index=["Opportunities", "Listing Detail", "Market / Overview"].index(st.session_state["view"]),
+    views,
+    index=views.index(st.session_state["view"]),
 )
 
 st.session_state["view"] = view
@@ -48,6 +50,8 @@ render_collector_health()
 
 if view == "Opportunities":
     render_opportunities()
+elif view == "Inactive Listings":
+    render_inactive_listings()
 elif view == "Listing Detail":
     render_listing_detail()
 else:

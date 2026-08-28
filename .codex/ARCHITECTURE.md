@@ -530,6 +530,13 @@ formulas while avoiding repeated full-market classification and DataFrame
 work. This context is transient and never changes SQLite or cache freshness
 semantics.
 
+The dashboard also exposes canonically inactive listings as a separate,
+lightweight lifecycle view. It reads existing listing and observation history,
+derives observed duration and first-to-last asking-price movement in memory,
+and never interprets inactivity as a confirmed sale. It does not calculate a
+fresh current-market valuation or Opportunity Score for inactive records;
+historical analytics require observation-time snapshots in a later phase.
+
 The application is not expected to automatically purchase or contact sellers.
 
 ---

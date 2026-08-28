@@ -7,6 +7,7 @@ from dashboard.data import (
     load_collector_run,
     load_dashboard_frame,
     load_history,
+    load_inactive_frame,
     load_listing_analysis,
     load_listings,
     load_overview,
@@ -87,6 +88,67 @@ def filter_opportunities(
     if body_styles:
         filtered = filtered.loc[filtered["body_style"].isin(body_styles)]
     return sort_opportunities(filtered)
+
+
+def sort_inactive_listings(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    return df.sort_values(
+        ["inactive_at", "listing_id"],
+        ascending=[False, True],
+        na_position="last",
+        kind="mergesort",
+    )
+
+
+def filter_inactive_listings(
+    df: pd.DataFrame,
+    *,
+    year_range: tuple[int, int] | None = None,
+    mileage_max: int | None = None,
+    transmissions: tuple[str, ...] | None = None,
+    body_styles: tuple[str, ...] | None = None,
+    price_range: tuple[float, float] | None = None,
+    duration_max_days: int | None = None,
+    price_decreased_only: bool = False,
+) -> pd.DataFrame:
+    filtered = df.copy()
+    if year_range is not None:
+        filtered = filtered.loc[pd.to_numeric(filtered["year"], errors="coerce").between(*year_range)]
+    if mileage_max is not None:
+        filtered = filtered.loc[
+            pd.to_numeric(filtered["mileage_km"], errors="coerce").le(mileage_max)
+        ]
+    if transmissions:
+        filtered = filtered.loc[filtered["transmission"].astype(str).isin(transmissions)]
+    if body_styles:
+        filtered = filtered.loc[filtered["body_style"].isin(body_styles)]
+    if price_range is not None:
+        filtered = filtered.loc[
+            pd.to_numeric(filtered["last_asking_price"], errors="coerce").between(*price_range)
+        ]
+    if duration_max_days is not None:
+        filtered = filtered.loc[
+            pd.to_numeric(filtered["observed_duration_days"], errors="coerce").le(duration_max_days)
+        ]
+    if price_decreased_only:
+        filtered = filtered.loc[
+            pd.to_numeric(filtered["price_change_eur"], errors="coerce").lt(0)
+        ]
+    return sort_inactive_listings(filtered)
+
+
+def _format_observed_duration(days: object) -> str:
+    value = pd.to_numeric(pd.Series([days]), errors="coerce").iloc[0]
+    if pd.isna(value) or value < 0:
+        return "—"
+    whole_days = int(value)
+    return f"{whole_days} day" if whole_days == 1 else f"{whole_days} days"
+
+
+def _format_date(value: object) -> str:
+    timestamp = pd.to_datetime(value, utc=True, errors="coerce")
+    return "—" if pd.isna(timestamp) else timestamp.strftime("%Y-%m-%d")
 
 
 def _collector_health(run: dict | None, now: pd.Timestamp | None = None) -> dict:
@@ -223,6 +285,101 @@ def render_opportunities() -> None:
     if selected_rows:
         st.session_state["selected_listing_id"] = str(table.iloc[selected_rows[0]]["listing_id"])
         st.success("Listing selected. Open **Listing Detail** from the sidebar.")
+
+
+def render_inactive_listings() -> None:
+    st.title("Inactive Listings")
+    st.warning(
+        "INACTIVE does not necessarily mean SOLD. A listing may have been sold, "
+        "deleted, expired, withdrawn, or otherwise become unavailable."
+    )
+    df = load_inactive_frame().copy()
+    if df.empty:
+        st.info("No canonically inactive listings available.")
+        return
+
+    prices = pd.to_numeric(df["last_asking_price"], errors="coerce")
+    durations = pd.to_numeric(df["observed_duration_days"], errors="coerce")
+    drops = pd.to_numeric(df["price_change_eur"], errors="coerce").lt(0)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Inactive Listings", len(df))
+    c2.metric("Median Last Asking Price", format_euro(prices.median()))
+    c3.metric("Median Observed Duration", _format_observed_duration(durations.median()))
+    c4.metric("Listings With Price Drops", int(drops.sum()))
+
+    years = pd.to_numeric(df["year"], errors="coerce").dropna()
+    mileages = pd.to_numeric(df["mileage_km"], errors="coerce").dropna()
+    valid_prices = prices.dropna()
+    valid_durations = durations.dropna()
+    transmission_values = sorted(df["transmission"].dropna().astype(str).unique())
+    body_values = sorted(df["body_style"].dropna().astype(str).unique())
+    with st.expander("Filters", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        year_range = (
+            c1.slider("Year range", int(years.min()), int(years.max()),
+                      (int(years.min()), int(years.max())))
+            if not years.empty else None
+        )
+        mileage_max = (
+            c2.number_input("Maximum mileage", 0, int(mileages.max()),
+                            int(mileages.max()), 10_000)
+            if not mileages.empty else None
+        )
+        duration_max = (
+            c3.number_input("Maximum observed duration (days)", 0,
+                            max(0, int(valid_durations.max())),
+                            max(0, int(valid_durations.max())), 1)
+            if not valid_durations.empty else None
+        )
+        c4, c5, c6 = st.columns(3)
+        transmissions = tuple(c4.multiselect(
+            "Transmission", transmission_values, transmission_values
+        ))
+        body_styles = tuple(c5.multiselect("Body Style", body_values, body_values))
+        price_decreased_only = c6.checkbox("Price decreased only", value=False)
+        price_range = (
+            st.slider("Last Asking Price range", float(valid_prices.min()),
+                      float(valid_prices.max()),
+                      (float(valid_prices.min()), float(valid_prices.max())), step=500.0)
+            if len(valid_prices) and valid_prices.min() < valid_prices.max() else None
+        )
+
+    filtered = filter_inactive_listings(
+        df,
+        year_range=year_range,
+        mileage_max=mileage_max,
+        transmissions=transmissions,
+        body_styles=body_styles,
+        price_range=price_range,
+        duration_max_days=duration_max,
+        price_decreased_only=price_decreased_only,
+    )
+    st.write(f"**{len(filtered)} listings**")
+    table = pd.DataFrame({
+        "Title": filtered["title"].fillna("—"),
+        "Last Asking Price": filtered["last_asking_price"].map(format_euro),
+        "Initial Observed Price": filtered["initial_observed_price"].map(format_euro),
+        "Last Observed Price": filtered["last_observed_price"].map(format_euro),
+        "Price Change €": filtered["price_change_eur"].map(format_signed_euro),
+        "Price Change %": filtered["price_change_percent"].map(format_signed_percent),
+        "Year": filtered["year"],
+        "Mileage": filtered["mileage_km"].map(format_mileage),
+        "Transmission": filtered["transmission"].fillna("—"),
+        "Body Style": filtered["body_style"],
+        "First Seen": filtered["first_seen"].map(_format_date),
+        "Last Seen": filtered["last_seen"].map(_format_date),
+        "Observed Duration": filtered["observed_duration_days"].map(_format_observed_duration),
+        "Listing ID": filtered["listing_id"],
+        "Open Listing": filtered["url"],
+    })
+    st.dataframe(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Open Listing": st.column_config.LinkColumn(display_text="Open ↗"),
+        },
+    )
 
 
 def render_listing_detail() -> None:

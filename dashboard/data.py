@@ -161,6 +161,81 @@ def load_price_drop_summary() -> pd.DataFrame:
     return _derive_price_drop_summary(load_all_history_prices())
 
 
+def build_inactive_frame(
+    listings: pd.DataFrame,
+    history: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build read-only lifecycle/history records for canonically inactive listings."""
+    if listings.empty or "is_active" not in listings.columns:
+        return pd.DataFrame()
+
+    inactive = listings.loc[pd.to_numeric(listings["is_active"], errors="coerce").eq(0)].copy()
+    if inactive.empty:
+        return inactive
+    inactive["listing_id"] = inactive["listing_id"].astype(str)
+    inactive["year"] = inactive["first_registration"].apply(registration_year)
+    inactive["body_style"] = inactive["title"].apply(
+        lambda title: extract_vehicle_semantics(None if pd.isna(title) else title).body_style.value
+    )
+    for column in ("first_seen", "last_seen", "inactive_at"):
+        if column in inactive.columns:
+            inactive[column] = pd.to_datetime(inactive[column], utc=True, errors="coerce")
+        else:
+            inactive[column] = pd.NaT
+    duration = inactive["last_seen"] - inactive["first_seen"]
+    inactive["observed_duration_days"] = duration.dt.total_seconds().div(86_400)
+    inactive.loc[duration.lt(pd.Timedelta(0)) | duration.isna(), "observed_duration_days"] = pd.NA
+
+    summary_columns = (
+        "initial_observed_price", "last_observed_price",
+        "price_change_eur", "price_change_percent",
+    )
+    summary = []
+    if not history.empty and {"listing_id", "price", "scraped_at"}.issubset(history.columns):
+        observations = history.copy()
+        observations["listing_id"] = observations["listing_id"].astype(str)
+        observations["price"] = pd.to_numeric(observations["price"], errors="coerce")
+        observations["scraped_at"] = pd.to_datetime(
+            observations["scraped_at"], utc=True, errors="coerce"
+        )
+        observations = observations.dropna(subset=["price", "scraped_at"])
+        observations = observations.sort_values(
+            ["listing_id", "scraped_at"], kind="mergesort"
+        )
+        for listing_id, group in observations.groupby("listing_id", sort=False):
+            initial = float(group.iloc[0]["price"])
+            last = float(group.iloc[-1]["price"])
+            summary.append({
+                "listing_id": listing_id,
+                "initial_observed_price": initial,
+                "last_observed_price": last,
+                "price_change_eur": last - initial,
+                "price_change_percent": ((last - initial) / initial * 100.0)
+                if initial > 0 else None,
+            })
+    history_summary = pd.DataFrame(summary, columns=("listing_id", *summary_columns))
+    inactive = inactive.merge(history_summary, on="listing_id", how="left")
+    inactive["last_asking_price"] = pd.to_numeric(inactive["price"], errors="coerce")
+    return inactive.sort_values(
+        ["inactive_at", "listing_id"],
+        ascending=[False, True],
+        na_position="last",
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
+def _load_inactive_frame_cached(freshness: tuple) -> pd.DataFrame:
+    return build_inactive_frame(
+        _load_listings_cached(freshness),
+        load_all_history_prices(),
+    )
+
+
+def load_inactive_frame() -> pd.DataFrame:
+    return _load_inactive_frame_cached(dashboard_source_freshness())
+
+
 def build_opportunity_frame(
     listings: pd.DataFrame,
     active_market_only: bool = True,

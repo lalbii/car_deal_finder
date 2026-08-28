@@ -11,6 +11,7 @@ import pandas as pd
 from dashboard.data import (
     _connect_read_only,
     _derive_price_drop_summary,
+    build_inactive_frame,
     build_opportunity_frame,
     dashboard_source_freshness,
 )
@@ -24,13 +25,117 @@ from dashboard.formatting import (
 from dashboard.views import (
     _collector_health,
     _format_duration,
+    _format_observed_duration,
+    filter_inactive_listings,
     filter_opportunities,
     render_listing_detail,
+    sort_inactive_listings,
     sort_opportunities,
 )
 
 
 class DashboardDataTests(unittest.TestCase):
+    @staticmethod
+    def inactive_listings_fixture() -> pd.DataFrame:
+        return pd.DataFrame([
+            {
+                "listing_id": "inactive-b", "title": "BMW 320d Touring",
+                "price": 8900, "mileage_km": 160000,
+                "first_registration": "2016", "transmission": "AUTOMATIC",
+                "is_active": 0, "first_seen": "2026-01-01T00:00:00Z",
+                "last_seen": "2026-01-13T00:00:00Z",
+                "inactive_at": "2026-01-15T00:00:00Z", "url": "https://example.test/b",
+            },
+            {
+                "listing_id": "inactive-a", "title": "BMW 320d Limousine",
+                "price": 10000, "mileage_km": 140000,
+                "first_registration": "2017", "transmission": "MANUAL",
+                "is_active": 0, "first_seen": "2026-01-01T00:00:00Z",
+                "last_seen": "2026-01-04T00:00:00Z",
+                "inactive_at": "2026-01-15T00:00:00Z", "url": "https://example.test/a",
+            },
+            {
+                "listing_id": "active", "title": "BMW 320d Touring",
+                "price": 11000, "mileage_km": 130000,
+                "first_registration": "2018", "transmission": "AUTOMATIC",
+                "is_active": 1, "first_seen": "2026-01-01T00:00:00Z",
+                "last_seen": "2026-01-10T00:00:00Z", "inactive_at": None,
+                "url": "https://example.test/active",
+            },
+            {
+                "listing_id": "unknown", "title": "BMW 320d",
+                "price": 9000, "mileage_km": 170000,
+                "first_registration": "2015", "transmission": "AUTOMATIC",
+                "is_active": None, "first_seen": "2026-01-01T00:00:00Z",
+                "last_seen": "2026-01-02T00:00:00Z", "inactive_at": None,
+                "url": "https://example.test/unknown",
+            },
+        ])
+
+    def test_inactive_frame_scope_history_duration_and_deterministic_sort(self):
+        history = pd.DataFrame([
+            {"listing_id": "inactive-b", "price": 8900, "scraped_at": "2026-01-12"},
+            {"listing_id": "inactive-b", "price": 9500, "scraped_at": "2026-01-02"},
+            {"listing_id": "active", "price": 11000, "scraped_at": "2026-01-03"},
+        ])
+        with patch("dashboard.data.calculate_opportunity_score") as score:
+            result = build_inactive_frame(self.inactive_listings_fixture(), history)
+        self.assertEqual(result["listing_id"].tolist(), ["inactive-a", "inactive-b"])
+        self.assertNotIn("active", result["listing_id"].tolist())
+        self.assertNotIn("unknown", result["listing_id"].tolist())
+        b = result.set_index("listing_id").loc["inactive-b"]
+        self.assertEqual(b["initial_observed_price"], 9500)
+        self.assertEqual(b["last_observed_price"], 8900)
+        self.assertEqual(b["price_change_eur"], -600)
+        self.assertAlmostEqual(b["price_change_percent"], -600 / 9500 * 100)
+        self.assertEqual(b["observed_duration_days"], 12)
+        self.assertNotIn("sale_status", result.columns)
+        self.assertNotIn("opportunity_score", result.columns)
+        score.assert_not_called()
+
+    def test_inactive_frame_missing_history_and_timestamps_are_safe(self):
+        listings = self.inactive_listings_fixture().iloc[[0]].copy()
+        listings.loc[:, "first_seen"] = None
+        result = build_inactive_frame(listings, pd.DataFrame())
+        row = result.iloc[0]
+        self.assertTrue(pd.isna(row["initial_observed_price"]))
+        self.assertTrue(pd.isna(row["last_observed_price"]))
+        self.assertTrue(pd.isna(row["price_change_eur"]))
+        self.assertTrue(pd.isna(row["price_change_percent"]))
+        self.assertTrue(pd.isna(row["observed_duration_days"]))
+        self.assertEqual(_format_observed_duration(row["observed_duration_days"]), "—")
+
+    def test_inactive_filters_and_sorting(self):
+        frame = build_inactive_frame(
+            self.inactive_listings_fixture(),
+            pd.DataFrame([
+                {"listing_id": "inactive-a", "price": 10000, "scraped_at": "2026-01-01"},
+                {"listing_id": "inactive-b", "price": 9500, "scraped_at": "2026-01-01"},
+                {"listing_id": "inactive-b", "price": 8900, "scraped_at": "2026-01-02"},
+            ]),
+        )
+        filtered = filter_inactive_listings(
+            frame, year_range=(2016, 2016), mileage_max=170000,
+            transmissions=("AUTOMATIC",), body_styles=("WAGON",),
+            price_range=(8000, 9000), duration_max_days=15,
+            price_decreased_only=True,
+        )
+        self.assertEqual(filtered["listing_id"].tolist(), ["inactive-b"])
+        self.assertEqual(
+            sort_inactive_listings(frame.sample(frac=1, random_state=3))["listing_id"].tolist(),
+            ["inactive-a", "inactive-b"],
+        )
+        self.assertEqual(_format_observed_duration(1), "1 day")
+        self.assertEqual(_format_observed_duration(12.9), "12 days")
+
+    def test_inactive_navigation_is_separate(self):
+        app = Path(__file__).resolve().parents[1].joinpath("dashboard", "app.py").read_text()
+        views = Path(__file__).resolve().parents[1].joinpath("dashboard", "views.py").read_text()
+        self.assertIn('"Inactive Listings"', app)
+        self.assertIn("render_inactive_listings()", app)
+        self.assertIn("render_collector_health()", app)
+        self.assertIn("INACTIVE does not necessarily mean SOLD", views)
+
     def test_unchanged_prices_are_not_drops(self):
         df = pd.DataFrame({
             "listing_id": ["1", "1"],

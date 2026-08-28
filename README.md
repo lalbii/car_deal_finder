@@ -17,7 +17,7 @@ The scraper itself is not a long-running daemon. Instead, a systemd timer starts
         │                   │
         ▼                   ▼
  systemd timer        Streamlit service
-   every hour              │
+   every hour               │
         │                   │
         ▼                   │
 car-deal-finder.service     │

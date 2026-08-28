@@ -53,6 +53,12 @@ def parse_timestamp(value: Any) -> pd.Timestamp | None:
     return ts
 
 
+def format_datetime(value: Any) -> str:
+    """Render a persisted timestamp compactly in UTC, or an explicit placeholder."""
+    timestamp = parse_timestamp(value)
+    return "—" if timestamp is None else timestamp.strftime("%Y-%m-%d %H:%M")
+
+
 def relative_time(value: Any, now: pd.Timestamp | None = None) -> str:
     ts = parse_timestamp(value)
     if ts is None:

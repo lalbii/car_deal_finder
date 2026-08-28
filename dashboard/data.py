@@ -27,6 +27,17 @@ CACHE_TTL_SECONDS = 60
 OPPORTUNITY_CACHE_TTL_SECONDS = 3_600
 
 
+def canonical_lifecycle_status(is_active: object) -> str:
+    """Map the persisted lifecycle flag without inferring from timestamps."""
+    if is_active is None or pd.isna(is_active):
+        return "UNKNOWN"
+    if is_active is True or is_active == 1:
+        return "ACTIVE"
+    if is_active is False or is_active == 0:
+        return "INACTIVE"
+    return "UNKNOWN"
+
+
 def _connect_read_only() -> sqlite3.Connection:
     db_path = Path(DB_PATH).resolve()
     conn = sqlite3.connect(
@@ -179,7 +190,9 @@ def build_inactive_frame(
     )
     for column in ("first_seen", "last_seen", "inactive_at"):
         if column in inactive.columns:
-            inactive[column] = pd.to_datetime(inactive[column], utc=True, errors="coerce")
+            inactive[column] = pd.to_datetime(
+                inactive[column], utc=True, errors="coerce", format="mixed"
+            )
         else:
             inactive[column] = pd.NaT
     duration = inactive["last_seen"] - inactive["first_seen"]

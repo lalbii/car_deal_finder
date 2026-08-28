@@ -30,10 +30,13 @@ from dashboard.views import (
     _format_observed_duration,
     _inactive_count_label,
     _inactive_filter_argument,
+    build_history_series,
+    build_inactive_table,
     build_opportunities_table,
     filter_inactive_listings,
     filter_opportunities,
     render_listing_detail,
+    resolve_selected_listing_id,
     sort_inactive_listings,
     sort_opportunities,
 )
@@ -197,6 +200,76 @@ class DashboardDataTests(unittest.TestCase):
             "Showing 4 of 11 inactive listings",
         )
 
+    def test_inactive_table_is_selectable_by_hidden_id_without_open_link(self):
+        frame = build_inactive_frame(self.inactive_listings_fixture(), pd.DataFrame())
+        table = build_inactive_table(frame)
+
+        self.assertIn("listing_id", table.columns)
+        self.assertNotIn("Open Listing", table.columns)
+        self.assertNotIn("Listing ID", table.columns)
+        self.assertEqual(
+            resolve_selected_listing_id(table, [1]),
+            table.iloc[1]["listing_id"],
+        )
+        self.assertIsNone(resolve_selected_listing_id(table, []))
+        self.assertIsNone(resolve_selected_listing_id(table, [len(table)]))
+
+    def test_history_series_uses_only_persisted_valid_ordered_observations(self):
+        history = pd.DataFrame(
+            [
+                {
+                    "scraped_at": "2026-01-02T12:00:00+00:00",
+                    "price": 9000,
+                    "view_count": 120,
+                    "inactive_at": "2026-01-03T00:00:00Z",
+                },
+                {
+                    "scraped_at": "2026-01-01T12:00:00.000000",
+                    "price": 9500,
+                    "view_count": 100,
+                    "inactive_at": None,
+                },
+                {
+                    "scraped_at": "invalid",
+                    "price": 8000,
+                    "view_count": 999,
+                    "inactive_at": None,
+                },
+                {
+                    "scraped_at": "2026-01-02T12:00:00+00:00",
+                    "price": 9000,
+                    "view_count": None,
+                    "inactive_at": None,
+                },
+                {
+                    "scraped_at": "2026-01-03T12:00:00Z",
+                    "price": None,
+                    "view_count": 140,
+                    "inactive_at": None,
+                },
+            ]
+        )
+
+        prices = build_history_series(history, "price")
+        views = build_history_series(history, "view_count")
+
+        self.assertEqual(prices["price"].tolist(), [9500, 9000, 9000])
+        self.assertEqual(views["view_count"].tolist(), [100, 120, 140])
+        self.assertTrue(prices["scraped_at"].is_monotonic_increasing)
+        self.assertTrue(views["scraped_at"].is_monotonic_increasing)
+        self.assertEqual(len(prices), 3)
+        self.assertNotIn("inactive_at", prices.columns)
+
+    def test_missing_history_signal_returns_safe_empty_series(self):
+        history = pd.DataFrame(
+            [{"scraped_at": "2026-01-01T00:00:00Z", "price": 9000}]
+        )
+
+        views = build_history_series(history, "view_count")
+
+        self.assertTrue(views.empty)
+        self.assertEqual(views.columns.tolist(), ["scraped_at", "view_count"])
+
     def test_inactive_navigation_is_separate(self):
         app = Path(__file__).resolve().parents[1].joinpath("dashboard", "app.py").read_text()
         views = Path(__file__).resolve().parents[1].joinpath("dashboard", "views.py").read_text()
@@ -345,6 +418,7 @@ class DashboardDataTests(unittest.TestCase):
             },
         ])
         table = build_opportunities_table(frame)
+        self.assertIn("Open Listing", table.columns)
         self.assertNotIn("Last Seen", table.columns)
         self.assertEqual(table["Last Search Presence"].tolist(), ["2026-08-28 12:41", "—", "—"])
         self.assertEqual(table["Last Checked"].tolist(), ["2026-08-28 13:00", "—", "—"])

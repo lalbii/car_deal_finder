@@ -195,6 +195,149 @@ def _inactive_count_label(shown: int, total: int) -> str:
     return f"Showing {shown} of {total} inactive listings"
 
 
+def build_inactive_table(filtered: pd.DataFrame) -> pd.DataFrame:
+    """Build the selectable inactive table with its stable ID hidden by the UI."""
+    return pd.DataFrame(
+        {
+            "listing_id": filtered["listing_id"].astype(str),
+            "Title": filtered["title"].fillna("—"),
+            "Last Asking Price": filtered["last_asking_price"].map(format_euro),
+            "Initial Observed Price": filtered["initial_observed_price"].map(
+                format_euro
+            ),
+            "Last Observed Price": filtered["last_observed_price"].map(format_euro),
+            "Price Change €": filtered["price_change_eur"].map(format_signed_euro),
+            "Price Change %": filtered["price_change_percent"].map(
+                format_signed_percent
+            ),
+            "Year": filtered["year"],
+            "Mileage": filtered["mileage_km"].map(format_mileage),
+            "Transmission": filtered["transmission"].fillna("UNKNOWN"),
+            "Body Style": filtered["body_style"].fillna("UNKNOWN"),
+            "First Seen": filtered["first_seen"].map(_format_date),
+            "Last Search Presence": filtered["last_seen"].map(_format_date),
+            "Observed Duration": filtered["observed_duration_days"].map(
+                _format_observed_duration
+            ),
+        }
+    )
+
+
+def resolve_selected_listing_id(
+    table: pd.DataFrame, selected_rows: list[int] | tuple[int, ...]
+) -> str | None:
+    """Resolve a selection immediately to its stable listing ID."""
+    if not selected_rows:
+        return None
+    row_position = selected_rows[0]
+    if row_position < 0 or row_position >= len(table):
+        return None
+    return str(table.iloc[row_position]["listing_id"])
+
+
+def build_history_series(history: pd.DataFrame, value_column: str) -> pd.DataFrame:
+    """Return valid persisted observations in deterministic chronological order."""
+    columns = ["scraped_at", value_column]
+    if history.empty or not set(columns).issubset(history.columns):
+        return pd.DataFrame(columns=columns)
+    series = history[columns].copy()
+    series["scraped_at"] = pd.to_datetime(
+        series["scraped_at"], utc=True, errors="coerce", format="mixed"
+    )
+    series[value_column] = pd.to_numeric(series[value_column], errors="coerce")
+    series = series.dropna(subset=columns)
+    return series.sort_values("scraped_at", kind="mergesort").reset_index(drop=True)
+
+
+def _render_selected_inactive_history(listing: pd.Series) -> None:
+    listing_id = str(listing["listing_id"])
+    title = listing.get("title")
+    title = None if title is None or pd.isna(title) else str(title)
+    transmission = listing.get("transmission")
+    transmission = (
+        "UNKNOWN"
+        if transmission is None or pd.isna(transmission)
+        else str(transmission)
+    )
+    body_style = listing.get("body_style")
+    body_style = (
+        "UNKNOWN" if body_style is None or pd.isna(body_style) else str(body_style)
+    )
+    st.subheader("Selected Listing")
+    st.markdown(f"**{title or f'Listing {listing_id}'}**")
+    metadata = {
+        "Listing ID": listing_id,
+        "Last Asking Price": format_euro(listing.get("last_asking_price")),
+        "Year": str(int(listing["year"])) if pd.notna(listing.get("year")) else "—",
+        "Mileage": format_mileage(listing.get("mileage_km")),
+        "Transmission": transmission,
+        "Body Style": body_style,
+        "First Seen": format_datetime(listing.get("first_seen")),
+        "Last Search Presence": format_datetime(listing.get("last_seen")),
+        "Inactive At": format_datetime(listing.get("inactive_at")),
+        "Observed Duration": _format_observed_duration(
+            listing.get("observed_duration_days")
+        ),
+    }
+    st.write(metadata)
+    st.caption(f"Confirmed inactive: {format_datetime(listing.get('inactive_at'))}")
+
+    history = load_history(listing_id)
+    invalid_timestamps = 0
+    if "scraped_at" in history.columns:
+        invalid_timestamps = int(history["scraped_at"].isna().sum())
+    price_history = build_history_series(history, "price")
+    view_history = build_history_series(history, "view_count")
+
+    st.subheader("Price History")
+    if price_history.empty:
+        st.info("Price history is not available for this listing.")
+    else:
+        prices = price_history["price"]
+        initial = float(prices.iloc[0])
+        last = float(prices.iloc[-1])
+        change = last - initial
+        change_percent = (change / initial * 100.0) if initial > 0 else None
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Initial observed price", format_euro(initial))
+        c2.metric("Last observed price", format_euro(last))
+        c3.metric("Lowest observed price", format_euro(prices.min()))
+        c4.metric("Price change €", format_signed_euro(change))
+        c5.metric("Price change %", format_signed_percent(change_percent))
+        c6.metric("Price observations", len(price_history))
+        st.line_chart(
+            price_history,
+            x="scraped_at",
+            y="price",
+            x_label="Observation time",
+            y_label="Price (€)",
+        )
+
+    st.subheader("Views Over Time")
+    if view_history.empty:
+        st.info("View history is not available for this listing.")
+    else:
+        views = view_history["view_count"]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("First observed views", f"{int(views.iloc[0]):,}")
+        c2.metric("Last observed views", f"{int(views.iloc[-1]):,}")
+        c3.metric("View increase", f"{int(views.iloc[-1] - views.iloc[0]):+,}")
+        c4.metric("View observations", len(view_history))
+        st.caption("View counts are cumulative values reported by Kleinanzeigen.")
+        st.line_chart(
+            view_history,
+            x="scraped_at",
+            y="view_count",
+            x_label="Observation time",
+            y_label="Views",
+        )
+    if invalid_timestamps:
+        st.caption(
+            f"Excluded {invalid_timestamps} historical observation(s) with an "
+            "invalid timestamp."
+        )
+
+
 def _format_observed_duration(days: object) -> str:
     value = pd.to_numeric(pd.Series([days]), errors="coerce").iloc[0]
     if pd.isna(value) or value < 0:
@@ -492,31 +635,28 @@ def render_inactive_listings() -> None:
     )
     c4.metric("Listings With Price Drops", int(filtered_drops.sum()))
     st.write(f"**{_inactive_count_label(len(filtered), len(df))}**")
-    table = pd.DataFrame({
-        "Title": filtered["title"].fillna("—"),
-        "Last Asking Price": filtered["last_asking_price"].map(format_euro),
-        "Initial Observed Price": filtered["initial_observed_price"].map(format_euro),
-        "Last Observed Price": filtered["last_observed_price"].map(format_euro),
-        "Price Change €": filtered["price_change_eur"].map(format_signed_euro),
-        "Price Change %": filtered["price_change_percent"].map(format_signed_percent),
-        "Year": filtered["year"],
-        "Mileage": filtered["mileage_km"].map(format_mileage),
-        "Transmission": filtered["transmission"].fillna("—"),
-        "Body Style": filtered["body_style"],
-        "First Seen": filtered["first_seen"].map(_format_date),
-        "Last Search Presence": filtered["last_seen"].map(_format_date),
-        "Observed Duration": filtered["observed_duration_days"].map(_format_observed_duration),
-        "Listing ID": filtered["listing_id"],
-        "Open Listing": filtered["url"],
-    })
-    st.dataframe(
+    table = build_inactive_table(filtered)
+    event = st.dataframe(
         table,
         use_container_width=True,
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="inactive_listings_table",
         column_config={
-            "Open Listing": st.column_config.LinkColumn(display_text="Open ↗"),
+            "listing_id": None,
         },
     )
+    selected_rows = getattr(event.selection, "rows", []) if event else []
+    selected_id = resolve_selected_listing_id(table, selected_rows)
+    if selected_id is None:
+        st.info("Select an inactive listing to inspect its history.")
+        return
+    selected = filtered.loc[filtered["listing_id"].astype(str).eq(selected_id)]
+    if selected.empty:
+        st.info("Select an inactive listing to inspect its history.")
+        return
+    _render_selected_inactive_history(selected.iloc[0])
 
 
 def render_listing_detail() -> None:

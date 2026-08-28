@@ -96,7 +96,9 @@ def load_history(listing_id: str) -> pd.DataFrame:
             params=(listing_id,),
         )
     if "scraped_at" in df.columns:
-        df["scraped_at"] = pd.to_datetime(df["scraped_at"], utc=True, errors="coerce")
+        df["scraped_at"] = pd.to_datetime(
+            df["scraped_at"], utc=True, errors="coerce", format="mixed"
+        )
     return df
 
 

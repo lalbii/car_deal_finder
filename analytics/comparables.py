@@ -21,6 +21,9 @@ from models.listing import TransmissionType
 from normalization.vehicle_fields import normalize_transmission, registration_year
 
 
+COMPARABLE_ENGINE_VERSION = "3"
+
+
 class ComparableStatus(str, Enum):
     OK = "OK"
     INSUFFICIENT_COMPARABLES = "INSUFFICIENT_COMPARABLES"

@@ -13,6 +13,9 @@ from analytics.valuation_eligibility import ValuationStatus
 from validation.listing_quality import DataQuality, classify_price
 
 
+OPPORTUNITY_SCORE_VERSION = "2.1"
+
+
 class EconomicOpportunityStatus(str, Enum):
     OK = "OK"
     VALUATION_UNAVAILABLE = "VALUATION_UNAVAILABLE"
@@ -177,7 +180,7 @@ def calculate_opportunity_score(
     """Return an explainable 0..100 sourcing heuristic, not probability or profit."""
     common = {
         "target_listing_id": economic.target_listing_id,
-        "score_version": "2.1",
+        "score_version": OPPORTUNITY_SCORE_VERSION,
         "discount_percent": economic.discount_percent,
         "market_gap_eur": economic.market_gap_eur,
         "valuation_confidence": economic.valuation_confidence,

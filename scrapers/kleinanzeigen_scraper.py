@@ -13,6 +13,9 @@ from models.run_summary import ScrapeRunSummary
 from models.runtime_config import RuntimeConfig
 from models.search_config import SearchConfig
 from operations.logging_config import get_logger
+from operations.opportunity_snapshots import (
+    calculate_and_persist_opportunity_snapshots,
+)
 from operations.request_scheduling import (
     should_check_status,
     should_refresh_detail,
@@ -559,6 +562,29 @@ def run(
             browser.close()
 
     summary.blocking_failures = breaker.blocking_failures
+    if summary.stopped_reason is None:
+        snapshot_result = calculate_and_persist_opportunity_snapshots(run_now)
+        summary.snapshots_calculated = snapshot_result.calculated
+        summary.snapshots_inserted = snapshot_result.inserted
+        summary.snapshot_calculation_seconds = snapshot_result.calculation_seconds
+        summary.snapshot_write_seconds = snapshot_result.write_seconds
+        logger.info(
+            "search=%s opportunity_snapshots_calculated=%s "
+            "opportunity_snapshots_inserted=%s calculation_seconds=%.3f "
+            "write_seconds=%.3f observed_at=%s",
+            search_config.name,
+            snapshot_result.calculated,
+            snapshot_result.inserted,
+            snapshot_result.calculation_seconds,
+            snapshot_result.write_seconds,
+            run_now.isoformat(),
+        )
+    else:
+        logger.warning(
+            "search=%s opportunity_snapshots_skipped=true stopped_reason=%s",
+            search_config.name,
+            summary.stopped_reason,
+        )
     _export_results(results, search_config, logger)
     record_collector_run(
         search_name=summary.search_name, succeeded=summary.stopped_reason is None,

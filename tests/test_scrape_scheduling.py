@@ -4,6 +4,7 @@ import unittest
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from models.runtime_config import RuntimeConfig
@@ -96,6 +97,18 @@ class ScrapeSchedulingTests(unittest.TestCase):
         )
         stack.enter_context(patch("scrapers.kleinanzeigen_scraper._export_results"))
         stack.enter_context(patch("scrapers.kleinanzeigen_scraper.record_collector_run"))
+        snapshotter = stack.enter_context(
+            patch(
+                "scrapers.kleinanzeigen_scraper.calculate_and_persist_opportunity_snapshots",
+                return_value=SimpleNamespace(
+                    calculated=0,
+                    inserted=0,
+                    calculation_seconds=0.0,
+                    write_seconds=0.0,
+                ),
+            )
+        )
+        return snapshotter
 
     def test_recent_known_search_result_updates_presence_without_detail_or_history(self):
         known = {
@@ -106,7 +119,7 @@ class ScrapeSchedulingTests(unittest.TestCase):
             "last_checked_at": (self.now - timedelta(hours=1)).isoformat(),
         }
         with ExitStack() as stack:
-            self._common_patches(stack, [known])
+            snapshotter = self._common_patches(stack, [known])
             self._browser_patches(stack)
             fetch_search = stack.enter_context(
                 patch(
@@ -142,6 +155,7 @@ class ScrapeSchedulingTests(unittest.TestCase):
         self.assertEqual(summary.search_requests, 1)
         self.assertEqual(summary.detail_requests, 0)
         self.assertEqual(summary.skipped_recent_details, 1)
+        snapshotter.assert_called_once_with(self.now)
 
     def test_new_listing_fetches_detail_and_writes_one_history_observation(self):
         with ExitStack() as stack:
@@ -453,7 +467,7 @@ class ScrapeSchedulingTests(unittest.TestCase):
             "last_checked_at": (self.now - timedelta(days=2)).isoformat(),
         }
         with ExitStack() as stack:
-            self._common_patches(stack, [known])
+            snapshotter = self._common_patches(stack, [known])
             self._browser_patches(stack, browser)
             fetch_detail = stack.enter_context(
                 patch("scrapers.kleinanzeigen_scraper.fetch_detail_page")
@@ -488,6 +502,7 @@ class ScrapeSchedulingTests(unittest.TestCase):
         self.assertEqual(summary.search_requests, 2)
         self.assertEqual(summary.blocking_failures, 2)
         self.assertEqual(summary.stopped_reason, "BLOCKING_SUSPECTED")
+        snapshotter.assert_not_called()
 
 
 if __name__ == "__main__":

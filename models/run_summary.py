@@ -25,6 +25,10 @@ class ScrapeRunSummary:
     skipped_recent_status_checks: int = 0
     details_succeeded: int = 0
     confirmed_inactive: int = 0
+    snapshots_calculated: int = 0
+    snapshots_inserted: int = 0
+    snapshot_calculation_seconds: float = 0.0
+    snapshot_write_seconds: float = 0.0
     blocking_failures: int = 0
     stopped_reason: str | None = None
     failures: Counter[str] = field(default_factory=Counter)
@@ -57,6 +61,10 @@ class ScrapeRunSummary:
                 f"Skipped recent status checks: {self.skipped_recent_status_checks}",
                 f"Details succeeded: {self.details_succeeded}",
                 f"Confirmed inactive: {self.confirmed_inactive}",
+                f"Opportunity snapshots calculated: {self.snapshots_calculated}",
+                f"Opportunity snapshots inserted: {self.snapshots_inserted}",
+                f"Snapshot calculation seconds: {self.snapshot_calculation_seconds:.3f}",
+                f"Snapshot write seconds: {self.snapshot_write_seconds:.3f}",
                 f"Blocking failures: {self.blocking_failures}",
                 f"Stopped reason: {self.stopped_reason or 'none'}",
                 "Failures:",

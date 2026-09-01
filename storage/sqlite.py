@@ -87,6 +87,38 @@ def init_db():
             error_message TEXT
         )
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS opportunity_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            asking_price REAL NOT NULL,
+            estimated_market_price REAL NOT NULL,
+            market_gap_eur REAL NOT NULL,
+            discount_percent REAL NOT NULL,
+            opportunity_score REAL NOT NULL,
+            score_version TEXT NOT NULL,
+            opportunity_status TEXT NOT NULL,
+            valuation_status TEXT NOT NULL,
+            valuation_confidence TEXT NOT NULL,
+            market_value_status TEXT NOT NULL,
+            comparable_count INTEGER NOT NULL,
+            strong_comparable_count INTEGER NOT NULL,
+            discount_component REAL NOT NULL,
+            margin_component REAL NOT NULL,
+            base_opportunity REAL NOT NULL,
+            confidence_multiplier REAL NOT NULL,
+            risk_multiplier REAL NOT NULL,
+            valuation_vocabulary_version INTEGER NOT NULL,
+            vehicle_semantics_version INTEGER NOT NULL,
+            comparable_version TEXT NOT NULL,
+            UNIQUE(listing_id, observed_at)
+        )
+        """)
+        conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_opportunity_snapshots_listing_observed
+        ON opportunity_snapshots(listing_id, observed_at DESC)
+        """)
         legacy_runs = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?",
             ("table", "collector_runs"),
@@ -94,6 +126,40 @@ def init_db():
         if legacy_runs:
             conn.execute("INSERT OR IGNORE INTO scrape_runs SELECT * FROM collector_runs")
         conn.commit()
+
+
+_OPPORTUNITY_SNAPSHOT_COLUMNS = (
+    "listing_id", "observed_at", "asking_price", "estimated_market_price",
+    "market_gap_eur", "discount_percent", "opportunity_score", "score_version",
+    "opportunity_status", "valuation_status", "valuation_confidence",
+    "market_value_status", "comparable_count", "strong_comparable_count",
+    "discount_component", "margin_component", "base_opportunity",
+    "confidence_multiplier", "risk_multiplier", "valuation_vocabulary_version",
+    "vehicle_semantics_version", "comparable_version",
+)
+
+
+def insert_opportunity_snapshots(rows: Iterable[dict]) -> int:
+    """Insert derived analytics idempotently for one or more observation times."""
+    records = list(rows)
+    if not records:
+        return 0
+    placeholders = ", ".join("?" for _ in _OPPORTUNITY_SNAPSHOT_COLUMNS)
+    columns = ", ".join(_OPPORTUNITY_SNAPSHOT_COLUMNS)
+    values = [
+        tuple(record.get(column) for column in _OPPORTUNITY_SNAPSHOT_COLUMNS)
+        for record in records
+    ]
+    with get_connection() as conn:
+        before = conn.total_changes
+        conn.executemany(
+            f"INSERT OR IGNORE INTO opportunity_snapshots ({columns}) "
+            f"VALUES ({placeholders})",
+            values,
+        )
+        inserted = conn.total_changes - before
+        conn.commit()
+    return inserted
 
 
 def record_collector_run(*, search_name: str, succeeded: bool, listings_discovered: int = 0,

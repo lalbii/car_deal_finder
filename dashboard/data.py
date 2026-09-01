@@ -103,6 +103,37 @@ def load_history(listing_id: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
+def load_opportunity_snapshots_before_inactivity(listing_id: str) -> pd.DataFrame:
+    """Load only genuinely recorded snapshots at or before canonical inactivity."""
+    query = """
+        SELECT snapshots.*
+        FROM opportunity_snapshots AS snapshots
+        JOIN listings ON listings.listing_id = snapshots.listing_id
+        WHERE snapshots.listing_id = ?
+          AND listings.is_active = 0
+          AND listings.inactive_at IS NOT NULL
+          AND datetime(snapshots.observed_at) <= datetime(listings.inactive_at)
+        ORDER BY datetime(snapshots.observed_at) ASC, snapshots.id ASC
+    """
+    try:
+        with _connect_read_only() as conn:
+            snapshots = pd.read_sql_query(query, conn, params=(str(listing_id),))
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).casefold():
+            raise
+        return pd.DataFrame()
+    if "observed_at" in snapshots.columns:
+        snapshots["observed_at"] = pd.to_datetime(
+            snapshots["observed_at"],
+            utc=True,
+            errors="coerce",
+            format="mixed",
+        )
+        snapshots = snapshots.dropna(subset=["observed_at"])
+    return snapshots.reset_index(drop=True)
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
 def load_all_history_prices() -> pd.DataFrame:
     with _connect_read_only() as conn:
         df = pd.read_sql_query(

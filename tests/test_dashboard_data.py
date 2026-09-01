@@ -19,6 +19,8 @@ from dashboard.data import (
 from dashboard.formatting import (
     format_datetime,
     format_euro,
+    format_listing_age,
+    format_listing_date,
     format_mileage,
     format_percent,
     format_signed_euro,
@@ -318,6 +320,31 @@ class DashboardDataTests(unittest.TestCase):
         self.assertEqual(_collector_health(None, now)["label"], "⚪ UNKNOWN")
         self.assertEqual(_format_duration(132), "2m12s")
 
+    def test_listing_age_uses_posted_date_and_last_check_only(self):
+        self.assertEqual(
+            format_listing_age("26.08.2026", "2026-09-01T21:00:00Z"), "6d"
+        )
+        self.assertEqual(format_listing_date("26.08.2026"), "2026-08-26")
+        self.assertEqual(format_listing_age(None, "2026-09-01T21:00:00Z"), "—")
+        self.assertEqual(format_listing_age("26.08.2026", None), "—")
+        self.assertEqual(
+            format_listing_age("02.09.2026", "2026-09-01T21:00:00Z"), "—"
+        )
+        self.assertEqual(
+            format_listing_age("invalid", "2026-09-01T21:00:00Z"), "—"
+        )
+        # A date-only source deliberately never produces hour precision.
+        self.assertEqual(
+            format_listing_age("01.09.2026", "2026-09-01T23:59:00Z"), "0d"
+        )
+        # Full timestamps remain robust if a historical value contains one.
+        self.assertEqual(
+            format_listing_age(
+                "2026-08-29T17:00:00Z", "2026-09-01T21:00:00Z"
+            ),
+            "3d 4h",
+        )
+
     def test_formatting(self):
         self.assertEqual(format_euro(9500), "€9.500")
         self.assertEqual(format_mileage(142000), "142.000 km")
@@ -391,6 +418,7 @@ class DashboardDataTests(unittest.TestCase):
                 "transmission": "AUTOMATIC", "body_style": "WAGON",
                 "first_seen": "2026-08-27T10:00:00Z",
                 "last_seen": "2026-08-28T12:41:00Z",
+                "posted_date": "26.08.2026",
                 "last_checked_at": "2026-08-28T13:00:00Z", "is_active": 1,
                 "url": "https://example.test/a",
             },
@@ -402,7 +430,8 @@ class DashboardDataTests(unittest.TestCase):
                 "year": 2015, "mileage_km": 170000,
                 "transmission": "MANUAL", "body_style": "UNKNOWN",
                 "first_seen": "2026-08-27T11:00:00Z",
-                "last_seen": None, "last_checked_at": None, "is_active": 0,
+                "last_seen": None, "posted_date": None,
+                "last_checked_at": None, "is_active": 0,
                 "url": "https://example.test/b",
             },
             {
@@ -413,20 +442,22 @@ class DashboardDataTests(unittest.TestCase):
                 "year": 2014, "mileage_km": 180000,
                 "transmission": "MANUAL", "body_style": "UNKNOWN",
                 "first_seen": "2026-08-26T11:00:00Z", "last_seen": None,
-                "last_checked_at": None, "is_active": None,
+                "posted_date": "29.08.2026",
+                "last_checked_at": "2026-08-28T13:00:00Z", "is_active": None,
                 "url": "https://example.test/c",
             },
         ])
         table = build_opportunities_table(frame)
         self.assertIn("Open Listing", table.columns)
         self.assertNotIn("Last Seen", table.columns)
-        self.assertEqual(table["Last Search Presence"].tolist(), ["2026-08-28 12:41", "—", "—"])
-        self.assertEqual(table["Last Checked"].tolist(), ["2026-08-28 13:00", "—", "—"])
+        self.assertEqual(table["Listing Date"].tolist(), ["2026-08-26", "—", "2026-08-29"])
+        self.assertEqual(table["Last Checked"].tolist(), ["2026-08-28 13:00", "—", "2026-08-28 13:00"])
+        self.assertEqual(table["Listing Age"].tolist(), ["2d", "—", "—"])
+        self.assertNotIn("First Seen", table.columns)
+        self.assertNotIn("Last Search Presence", table.columns)
         self.assertEqual(table["Status"].tolist(), ["ACTIVE", "INACTIVE", "UNKNOWN"])
-        self.assertLess(
-            table.columns.get_loc("First Seen"),
-            table.columns.get_loc("Last Search Presence"),
-        )
+        self.assertLess(table.columns.get_loc("Listing Date"), table.columns.get_loc("Last Checked"))
+        self.assertLess(table.columns.get_loc("Last Checked"), table.columns.get_loc("Listing Age"))
         self.assertEqual(table["listing_id"].tolist(), ["a", "b", "c"])
         self.assertEqual(canonical_lifecycle_status("uncertain"), "UNKNOWN")
 
@@ -493,7 +524,7 @@ class DashboardDataTests(unittest.TestCase):
             "listing_id": "1", "title": "BMW 320d Touring", "url": "https://example.test/1",
             "price": 8000, "first_registration": "2016", "mileage_km": 150000,
             "transmission": "AUTOMATIC", "first_seen": "2026-01-01",
-            "last_seen": "2026-01-02T12:41:00Z",
+            "last_seen": "2026-01-02T12:41:00Z", "posted_date": "26.12.2025",
             "last_checked_at": "2026-01-02T13:00:00Z", "is_active": 1,
         })
         comparables = pd.DataFrame([{
@@ -541,8 +572,10 @@ class DashboardDataTests(unittest.TestCase):
                 "Confidence multiplier", "Risk multiplier", "Final score",
             }.issubset(labels))
             metadata = streamlit.write.call_args_list[0].args[0]
-            self.assertEqual(metadata["First Seen"], "2026-01-01 00:00")
-            self.assertEqual(metadata["Last Search Presence"], "2026-01-02 12:41")
+            self.assertEqual(metadata["Listing Date"], "2025-12-26")
+            self.assertEqual(metadata["Listing Age"], "7d")
+            self.assertNotIn("First Seen", metadata)
+            self.assertNotIn("Last Search Presence", metadata)
             self.assertEqual(metadata["Last Checked"], "2026-01-02 13:00")
             self.assertEqual(metadata["Status"], "ACTIVE")
             comparable_tables = [

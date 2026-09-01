@@ -13,11 +13,14 @@ from dashboard.data import (
     load_inactive_frame,
     load_listing_analysis,
     load_listings,
+    load_opportunity_snapshots_before_inactivity,
     load_overview,
 )
 from dashboard.formatting import (
     format_datetime,
     format_euro,
+    format_listing_age,
+    format_listing_date,
     format_mileage,
     format_percent,
     format_score,
@@ -96,14 +99,14 @@ def filter_opportunities(
 
 def build_opportunities_table(filtered: pd.DataFrame) -> pd.DataFrame:
     """Build the visible opportunity table without changing analytics ordering."""
-    last_seen = (
-        filtered["last_seen"]
-        if "last_seen" in filtered.columns
-        else pd.Series(None, index=filtered.index, dtype=object)
-    )
     last_checked = (
         filtered["last_checked_at"]
         if "last_checked_at" in filtered.columns
+        else pd.Series(None, index=filtered.index, dtype=object)
+    )
+    posted_date = (
+        filtered["posted_date"]
+        if "posted_date" in filtered.columns
         else pd.Series(None, index=filtered.index, dtype=object)
     )
     is_active = (
@@ -125,9 +128,13 @@ def build_opportunities_table(filtered: pd.DataFrame) -> pd.DataFrame:
             "Mileage": filtered["mileage_km"].map(format_mileage),
             "Transmission": filtered["transmission"],
             "Body Style": filtered["body_style"],
-            "First Seen": filtered["first_seen"].map(relative_time),
-            "Last Search Presence": last_seen.map(format_datetime),
+            "Listing Date": posted_date.map(format_listing_date),
             "Last Checked": last_checked.map(format_datetime),
+            "Listing Age": pd.Series(
+                (format_listing_age(published, checked)
+                 for published, checked in zip(posted_date, last_checked)),
+                index=filtered.index,
+            ),
             "Status": is_active.map(canonical_lifecycle_status),
             "Open Listing": filtered["url"],
         }
@@ -281,6 +288,41 @@ def _render_selected_inactive_history(listing: pd.Series) -> None:
     }
     st.write(metadata)
     st.caption(f"Confirmed inactive: {format_datetime(listing.get('inactive_at'))}")
+
+    snapshots = load_opportunity_snapshots_before_inactivity(listing_id)
+    st.subheader("Historical Opportunity Score")
+    if snapshots.empty:
+        st.info("Historical Opportunity Score unavailable")
+    else:
+        latest = snapshots.iloc[-1]
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Last Opportunity Score", format_score(latest["opportunity_score"]))
+        c2.metric("Confidence", str(latest["valuation_confidence"]))
+        c3.metric("Estimated Market", format_euro(latest["estimated_market_price"]))
+        c4.metric("Market Gap €", format_signed_euro(latest["market_gap_eur"]))
+        c5.metric("Discount %", format_signed_percent(latest["discount_percent"]))
+        st.write(
+            {
+                "Comparable Count": int(latest["comparable_count"]),
+                "Strong Comparables": int(latest["strong_comparable_count"]),
+                "Score Version": str(latest["score_version"]),
+                "Snapshot Time": format_datetime(latest["observed_at"]),
+                "Inactive At": format_datetime(listing.get("inactive_at")),
+            }
+        )
+        if len(snapshots) > 1:
+            score_history = build_history_series(
+                snapshots.rename(columns={"observed_at": "scraped_at"}),
+                "opportunity_score",
+            ).rename(columns={"scraped_at": "observed_at"})
+            st.subheader("Opportunity Score Over Time")
+            st.line_chart(
+                score_history,
+                x="observed_at",
+                y="opportunity_score",
+                x_label="Snapshot time",
+                y_label="Opportunity Score",
+            )
 
     history = load_history(listing_id)
     invalid_timestamps = 0
@@ -481,11 +523,14 @@ def render_opportunities() -> None:
         selection_mode="single-row",
         column_config={
             "Opportunity Score": st.column_config.NumberColumn(format="%.1f", help=OPPORTUNITY_HELP),
-            "Last Search Presence": st.column_config.TextColumn(
-                help="Latest accepted search-result presence. Status-only checks do not update this field."
+            "Listing Date": st.column_config.TextColumn(
+                help="Actual publication date reported by Kleinanzeigen."
             ),
             "Last Checked": st.column_config.TextColumn(
                 help="Latest persisted conclusive lifecycle/detail check."
+            ),
+            "Listing Age": st.column_config.TextColumn(
+                help="Whole calendar days from the Kleinanzeigen publication date to the latest direct check."
             ),
             "Open Listing": st.column_config.LinkColumn(display_text="Open ↗"),
             "listing_id": None,
@@ -689,11 +734,12 @@ def render_listing_detail() -> None:
     st.write({
         "Eligibility": eligibility.status.value,
         "Risk reasons": [reason.value for reason in eligibility.reasons] or ["—"],
-        "First Seen": format_datetime(listing.get("first_seen")),
-        "Last Search Presence": format_datetime(listing.get("last_seen")),
+        "Listing Date": format_listing_date(listing.get("posted_date")),
         "Last Checked": format_datetime(listing.get("last_checked_at")),
+        "Listing Age": format_listing_age(
+            listing.get("posted_date"), listing.get("last_checked_at")
+        ),
         "Status": canonical_lifecycle_status(listing.get("is_active")),
-        "Listing Age": relative_time(listing.get("first_seen")),
     })
 
     st.subheader("Valuation and economics")

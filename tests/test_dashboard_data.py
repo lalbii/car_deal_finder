@@ -33,12 +33,17 @@ from dashboard.views import (
     _inactive_count_label,
     _inactive_filter_argument,
     build_history_series,
+    build_opportunity_funnel,
     build_inactive_table,
     build_comparables_table,
     build_opportunities_table,
     filter_inactive_listings,
     filter_opportunities,
     render_listing_detail,
+    POSITIVE_ONLY_DEFAULT,
+    INCLUDE_UNSCORED_LABEL,
+    INCLUDE_UNSCORED_HELP,
+    REAL_CONFIDENCE_LEVELS,
     resolve_selected_listing_id,
     sort_inactive_listings,
     sort_opportunities,
@@ -517,12 +522,39 @@ class DashboardDataTests(unittest.TestCase):
             {"listing_id": "c", "opportunity_score": 60.0, "discount_percent": -5.0,
              "market_gap_eur": -500.0, "valuation_confidence": "LOW", "year": 2010,
              "mileage_km": 250000, "transmission": "MANUAL", "body_style": "SEDAN"},
+            {"listing_id": "z", "opportunity_score": 55.0, "discount_percent": 0.0,
+             "market_gap_eur": 0.0, "valuation_confidence": "MEDIUM", "year": 2015,
+             "mileage_km": 120000, "transmission": "AUTOMATIC", "body_style": "WAGON"},
+            {"listing_id": "mixed", "opportunity_score": 65.0, "discount_percent": 10.0,
+             "market_gap_eur": -10.0, "valuation_confidence": "MEDIUM", "year": 2015,
+             "mileage_km": 120000, "transmission": "AUTOMATIC", "body_style": "WAGON"},
             {"listing_id": "u", "opportunity_score": None, "discount_percent": None,
              "market_gap_eur": None, "valuation_confidence": "UNAVAILABLE", "year": 2015,
              "mileage_km": 100000, "transmission": "AUTOMATIC", "body_style": "UNKNOWN"},
         ])
         default = filter_opportunities(frame)
-        self.assertEqual(default["listing_id"].tolist(), ["a", "b"])
+        self.assertFalse(POSITIVE_ONLY_DEFAULT)
+        self.assertEqual(INCLUDE_UNSCORED_LABEL, "Include unscored listings")
+        self.assertIn("do not currently have an Opportunity Score", INCLUDE_UNSCORED_HELP)
+        self.assertEqual(
+            default["listing_id"].tolist(), ["a", "b", "mixed", "c", "z"]
+        )
+        positive = filter_opportunities(frame, positive_only=True)
+        self.assertEqual(positive["listing_id"].tolist(), ["a", "b", "z"])
+        self.assertEqual(
+            filter_opportunities(frame, minimum_discount=15)["listing_id"].tolist(),
+            ["a", "b"],
+        )
+        self.assertEqual(
+            filter_opportunities(
+                frame, positive_only=True, minimum_discount=15
+            )["listing_id"].tolist(),
+            ["a", "b"],
+        )
+        self.assertEqual(
+            filter_opportunities(frame, minimum_gap=1500)["listing_id"].tolist(),
+            ["a", "b"],
+        )
         selected = filter_opportunities(
             frame,
             minimum_score=65,
@@ -533,9 +565,55 @@ class DashboardDataTests(unittest.TestCase):
             body_styles=("WAGON",),
         )
         self.assertEqual(selected["listing_id"].tolist(), ["a"])
-        with_unavailable = filter_opportunities(frame, include_unavailable=True)
+        with_unavailable = filter_opportunities(frame, include_unscored=True)
         self.assertIn("u", with_unavailable["listing_id"].tolist())
+        self.assertNotIn("UNAVAILABLE", REAL_CONFIDENCE_LEVELS)
+        self.assertNotIn(
+            "u",
+            filter_opportunities(
+                frame, include_unscored=True, positive_only=True
+            )["listing_id"].tolist(),
+        )
+        for constraint in (
+            {"minimum_score": 0},
+            {"minimum_discount": -100},
+            {"minimum_gap": -10000},
+            {"confidences": ("HIGH", "MEDIUM", "LOW")},
+        ):
+            self.assertNotIn(
+                "u",
+                filter_opportunities(
+                    frame, include_unscored=True, **constraint
+                )["listing_id"].tolist(),
+            )
         self.assertEqual(sort_opportunities(frame).iloc[0]["listing_id"], "a")
+
+    def test_opportunity_funnel_uses_canonical_dynamic_counts(self):
+        listings = pd.DataFrame([
+            {"listing_id": "a", "is_active": 1, "price": 10000, "mileage_km": 100000, "first_registration": "2018"},
+            {"listing_id": "b", "is_active": 1, "price": 9000, "mileage_km": 120000, "first_registration": "2017"},
+            {"listing_id": "c", "is_active": 1, "price": 8000, "mileage_km": 140000, "first_registration": "2016"},
+            {"listing_id": "d", "is_active": 1, "price": None, "mileage_km": 160000, "first_registration": "2015"},
+            {"listing_id": "e", "is_active": 0, "price": 7000, "mileage_km": 180000, "first_registration": "2014"},
+        ])
+        market = pd.DataFrame([
+            {"listing_id": "a", "eligibility_status": "ELIGIBLE", "market_value_status": "OK", "estimated_market_price": 11000, "opportunity_score": 60},
+            {"listing_id": "b", "eligibility_status": "ELIGIBLE_WITH_RISK", "market_value_status": "TARGET_INELIGIBLE", "estimated_market_price": None, "opportunity_score": None},
+            {"listing_id": "c", "eligibility_status": "ELIGIBLE", "market_value_status": "INSUFFICIENT_COMPARABLES", "estimated_market_price": None, "opportunity_score": None},
+            {"listing_id": "d", "eligibility_status": "INELIGIBLE", "market_value_status": "TARGET_MISSING_CORE_DATA", "estimated_market_price": None, "opportunity_score": None},
+        ])
+
+        funnel = build_opportunity_funnel(listings, market, market)
+
+        self.assertEqual(funnel, {
+            "Total DB": 5, "Active": 4, "Eligible": 2, "Valued": 1,
+            "Scored": 1, "Shown": 4, "Shown scored": 1, "Shown unscored": 3,
+            "Inactive": 1, "Core data issues": 1,
+            "Ineligible / risk": 1, "Insufficient comparables": 1,
+        })
+        self.assertEqual(
+            funnel["Shown scored"] + funnel["Shown unscored"], funnel["Shown"]
+        )
 
     def test_sqlite_connection_is_query_only(self):
         with _connect_read_only() as connection:

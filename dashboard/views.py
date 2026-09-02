@@ -29,6 +29,20 @@ from dashboard.formatting import (
     relative_time,
 )
 from parsers.status_parser import is_listing_detail_url
+from validation.listing_quality import (
+    DataQuality,
+    classify_first_registration,
+    classify_mileage,
+    classify_price,
+)
+
+
+POSITIVE_ONLY_DEFAULT = False
+INCLUDE_UNSCORED_LABEL = "Include unscored listings"
+INCLUDE_UNSCORED_HELP = (
+    "Include active listings that do not currently have an Opportunity Score."
+)
+REAL_CONFIDENCE_LEVELS = ("HIGH", "MEDIUM", "LOW")
 
 
 OPPORTUNITY_HELP = (
@@ -63,10 +77,11 @@ def sort_opportunities(df: pd.DataFrame) -> pd.DataFrame:
 def filter_opportunities(
     df: pd.DataFrame,
     *,
-    include_unavailable: bool = False,
-    minimum_score: float = 0.0,
-    minimum_discount: float = 0.0,
-    minimum_gap: float = 0.0,
+    include_unscored: bool = False,
+    minimum_score: float | None = None,
+    minimum_discount: float | None = None,
+    minimum_gap: float | None = None,
+    positive_only: bool = POSITIVE_ONLY_DEFAULT,
     confidences: tuple[str, ...] | None = None,
     year_range: tuple[int, int] | None = None,
     mileage_max: int | None = None,
@@ -74,15 +89,21 @@ def filter_opportunities(
     body_styles: tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     filtered = df.copy()
-    if not include_unavailable:
+    if not include_unscored:
         filtered = filtered.loc[filtered["opportunity_score"].notna()]
+    if positive_only:
+        discount = pd.to_numeric(filtered["discount_percent"], errors="coerce")
+        gap = pd.to_numeric(filtered["market_gap_eur"], errors="coerce")
+        filtered = filtered.loc[discount.ge(0) & gap.ge(0)]
     for column, minimum in (
         ("opportunity_score", minimum_score),
         ("discount_percent", minimum_discount),
         ("market_gap_eur", minimum_gap),
     ):
+        if minimum is None:
+            continue
         values = pd.to_numeric(filtered[column], errors="coerce")
-        filtered = filtered.loc[values.ge(minimum) | (include_unavailable & values.isna())]
+        filtered = filtered.loc[values.ge(minimum)]
     if confidences:
         filtered = filtered.loc[filtered["valuation_confidence"].isin(confidences)]
     if year_range is not None:
@@ -96,6 +117,52 @@ def filter_opportunities(
     if body_styles:
         filtered = filtered.loc[filtered["body_style"].isin(body_styles)]
     return sort_opportunities(filtered)
+
+
+def build_opportunity_funnel(
+    listings: pd.DataFrame,
+    active_market: pd.DataFrame,
+    shown: pd.DataFrame,
+) -> dict[str, int]:
+    """Return read-only Opportunity funnel and diagnostic presentation counts."""
+    active = listings.loc[listings["is_active"].eq(1)].copy()
+    core_issue = pd.Series(False, index=active.index)
+    for column, classifier in (
+        ("price", classify_price),
+        ("mileage_km", classify_mileage),
+        ("first_registration", classify_first_registration),
+    ):
+        qualities = active[column].apply(classifier)
+        core_issue |= qualities.isin({DataQuality.MISSING, DataQuality.INVALID})
+
+    accepted_ids = set(active.loc[~core_issue, "listing_id"].astype(str))
+    accepted_market = active_market.loc[
+        active_market["listing_id"].astype(str).isin(accepted_ids)
+    ]
+    strict_eligible = active_market["eligibility_status"].eq("ELIGIBLE")
+    valued = active_market["market_value_status"].eq("OK")
+    scored = active_market["opportunity_score"].notna()
+    shown_scored = int(shown["opportunity_score"].notna().sum())
+    shown_unscored = int(shown["opportunity_score"].isna().sum())
+    ineligible_or_risk = accepted_market["eligibility_status"].ne("ELIGIBLE")
+    insufficient = (
+        strict_eligible
+        & active_market["market_value_status"].eq("INSUFFICIENT_COMPARABLES")
+    )
+    return {
+        "Total DB": len(listings),
+        "Active": len(active),
+        "Eligible": int(strict_eligible.sum()),
+        "Valued": int(valued.sum()),
+        "Scored": int(scored.sum()),
+        "Shown": len(shown),
+        "Shown scored": shown_scored,
+        "Shown unscored": shown_unscored,
+        "Inactive": int(listings["is_active"].eq(0).sum()),
+        "Core data issues": int(core_issue.sum()),
+        "Ineligible / risk": int(ineligible_or_risk.sum()),
+        "Insufficient comparables": int(insufficient.sum()),
+    }
 
 
 def build_opportunities_table(filtered: pd.DataFrame) -> pd.DataFrame:
@@ -516,6 +583,7 @@ def render_collector_health() -> None:
 def render_opportunities() -> None:
     st.title("Opportunities")
     st.caption(OPPORTUNITY_HELP)
+    listings = load_listings().copy()
     df = load_dashboard_frame(active_market_only=True).copy()
     if df.empty:
         st.info("No active listings available.")
@@ -523,15 +591,36 @@ def render_opportunities() -> None:
 
     year_values = pd.to_numeric(df["year"], errors="coerce").dropna()
     mileage_values = pd.to_numeric(df["mileage_km"], errors="coerce").dropna()
-    confidence_values = sorted(df["valuation_confidence"].dropna().unique())
+    confidence_values = [
+        value for value in REAL_CONFIDENCE_LEVELS
+        if df["valuation_confidence"].eq(value).any()
+    ]
     transmission_values = sorted(df["transmission"].dropna().astype(str).unique())
     body_values = sorted(df["body_style"].dropna().unique())
+    scored = df.loc[df["opportunity_score"].notna()]
+    discount_values = pd.to_numeric(scored["discount_percent"], errors="coerce").dropna()
+    gap_values = pd.to_numeric(scored["market_gap_eur"], errors="coerce").dropna()
+    neutral_discount = float(discount_values.min()) if not discount_values.empty else 0.0
+    neutral_gap = float(gap_values.min()) if not gap_values.empty else 0.0
     with st.expander("Filters", expanded=True):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         minimum_score = c1.number_input("Minimum Opportunity Score", 0.0, 100.0, 0.0, 1.0)
-        minimum_discount = c2.number_input("Minimum Discount %", value=0.0, step=1.0)
-        minimum_gap = c3.number_input("Minimum Market Gap €", value=0.0, step=500.0)
-        include_unavailable = c4.checkbox("Include unavailable", value=False)
+        minimum_discount = c2.number_input(
+            "Minimum Discount %", value=neutral_discount, step=1.0
+        )
+        minimum_gap = c3.number_input(
+            "Minimum Market Gap €", value=neutral_gap, step=500.0
+        )
+        include_unscored = c4.checkbox(
+            INCLUDE_UNSCORED_LABEL,
+            value=False,
+            help=INCLUDE_UNSCORED_HELP,
+        )
+        positive_only = c5.checkbox(
+            "Positive opportunities only",
+            value=POSITIVE_ONLY_DEFAULT,
+            help="Show only listings with non-negative market gap and discount.",
+        )
         c5, c6, c7, c8 = st.columns(4)
         confidences = tuple(c5.multiselect("Confidence", confidence_values, confidence_values))
         year_range = (
@@ -548,17 +637,59 @@ def render_opportunities() -> None:
 
     filtered = filter_opportunities(
         df,
-        include_unavailable=include_unavailable,
-        minimum_score=minimum_score,
-        minimum_discount=minimum_discount,
-        minimum_gap=minimum_gap,
-        confidences=confidences,
+        include_unscored=include_unscored,
+        minimum_score=None if minimum_score == 0.0 else minimum_score,
+        minimum_discount=(
+            None if minimum_discount == neutral_discount else minimum_discount
+        ),
+        minimum_gap=None if minimum_gap == neutral_gap else minimum_gap,
+        positive_only=positive_only,
+        confidences=None if confidences == tuple(confidence_values) else confidences,
         year_range=year_range,
         mileage_max=mileage_max,
         transmissions=transmissions,
         body_styles=body_styles,
     )
-    st.write(f"**{len(filtered)} listings**")
+    funnel = build_opportunity_funnel(listings, df, filtered)
+    funnel_columns = st.columns(6)
+    for column, label in zip(
+        funnel_columns,
+        ("Total DB", "Active", "Eligible", "Valued", "Scored", "Shown"),
+    ):
+        help_text = (
+            "Strict valuation ELIGIBLE only; risk listings are excluded."
+            if label == "Eligible"
+            else None
+        )
+        column.metric(label, funnel[label], help=help_text)
+    with st.expander("Funnel diagnostics", expanded=False):
+        st.caption(
+            " · ".join(
+                f"{label}: {funnel[label]}"
+                for label in (
+                    "Inactive",
+                    "Core data issues",
+                    "Ineligible / risk",
+                    "Insufficient comparables",
+                )
+            )
+        )
+    shown_detail = (
+        f"{funnel['Shown scored']} scored"
+        + (
+            f" · {funnel['Shown unscored']} unscored"
+            if funnel["Shown unscored"]
+            else ""
+        )
+    )
+    if include_unscored:
+        st.write(f"**Showing {funnel['Shown']} active listings**")
+        st.caption(shown_detail)
+    else:
+        st.write(
+            f"**Showing {funnel['Shown']} of {funnel['Scored']} "
+            "scored listings**"
+        )
     table = build_opportunities_table(filtered)
     event = st.dataframe(
         table,

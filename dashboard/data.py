@@ -133,6 +133,47 @@ def load_opportunity_snapshots_before_inactivity(listing_id: str) -> pd.DataFram
     return snapshots.reset_index(drop=True)
 
 
+def query_inactive_score_calibration(connection: sqlite3.Connection) -> pd.DataFrame:
+    """Select each inactive listing's last persisted score before inactivity."""
+    return pd.read_sql_query(
+        """
+        WITH ranked AS (
+            SELECT listings.listing_id, listings.title, listings.posted_date,
+                   listings.first_seen, listings.last_seen, listings.inactive_at,
+                   snapshots.opportunity_score, snapshots.observed_at,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY listings.listing_id
+                       ORDER BY datetime(snapshots.observed_at) DESC, snapshots.id DESC
+                   ) AS snapshot_rank
+            FROM listings
+            JOIN opportunity_snapshots AS snapshots
+              ON snapshots.listing_id = listings.listing_id
+            WHERE listings.is_active = 0
+              AND listings.inactive_at IS NOT NULL
+              AND snapshots.opportunity_score IS NOT NULL
+              AND datetime(snapshots.observed_at) <= datetime(listings.inactive_at)
+        )
+        SELECT listing_id, title, posted_date, first_seen, last_seen, inactive_at,
+               opportunity_score, observed_at
+        FROM ranked
+        WHERE snapshot_rank = 1
+        ORDER BY listing_id
+        """,
+        connection,
+    )
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
+def load_inactive_score_calibration() -> pd.DataFrame:
+    try:
+        with _connect_read_only() as connection:
+            return query_inactive_score_calibration(connection)
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).casefold():
+            raise
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
 def load_all_history_prices() -> pd.DataFrame:
     with _connect_read_only() as conn:

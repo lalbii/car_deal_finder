@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import math
+import time
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
+from config.search_loader import load_search_configs
 from dashboard.data import (
     canonical_lifecycle_status,
     load_collector_run,
     load_dashboard_frame,
     load_history,
     load_inactive_frame,
+    load_inactive_score_calibration,
     load_listing_analysis,
     load_listings,
     load_opportunity_snapshots_before_inactivity,
     load_overview,
+    load_price_drop_summary,
 )
 from dashboard.formatting import (
     format_datetime,
@@ -955,43 +960,405 @@ def render_listing_detail() -> None:
             st.dataframe(history, use_container_width=True, hide_index=True)
 
 
+def market_label(name: str) -> str:
+    """Return a compact label without inferring vehicle semantics."""
+    return " ".join(
+        token.upper() if token.casefold() in {"bmw", "nrw"} else token
+        for token in name.replace("_", " ").split()
+    )
+
+
+def scope_market_rows(
+    frame: pd.DataFrame, selected: str, enabled_markets: tuple[str, ...]
+) -> pd.DataFrame:
+    """Scope rows only through a persisted search association when required."""
+    if len(enabled_markets) == 1:
+        return frame.copy()
+    if "search_name" not in frame.columns:
+        raise ValueError(
+            "Multiple searches are configured, but listings have no persisted "
+            "search association; markets cannot be mixed safely."
+        )
+    return frame.loc[frame["search_name"].eq(selected)].copy()
+
+
+def listing_age_days(frame: pd.DataFrame) -> pd.Series:
+    posted = pd.to_datetime(
+        frame.get("posted_date"), dayfirst=True, utc=True, errors="coerce"
+    )
+    checked = pd.to_datetime(
+        frame.get("last_checked_at"), utc=True, errors="coerce", format="mixed"
+    )
+    age = (checked.dt.normalize() - posted.dt.normalize()).dt.days.astype("Float64")
+    return age.where(age.ge(0))
+
+
+def build_market_snapshot(active: pd.DataFrame) -> dict[str, float | int | None]:
+    prices = pd.to_numeric(active["price"], errors="coerce")
+    mileages = pd.to_numeric(active["mileage_km"], errors="coerce")
+    valid_prices = prices.loc[
+        active["price"].apply(classify_price).eq(DataQuality.VALID)
+    ]
+    valid_mileages = mileages.loc[
+        active["mileage_km"].apply(classify_mileage).eq(DataQuality.VALID)
+    ]
+    scored = active.loc[active["opportunity_score"].notna()]
+    positive = (
+        pd.to_numeric(scored["discount_percent"], errors="coerce").ge(0)
+        & pd.to_numeric(scored["market_gap_eur"], errors="coerce").ge(0)
+    )
+    return {
+        "active": len(active),
+        "median_price": valid_prices.median() if not valid_prices.empty else None,
+        "median_mileage": valid_mileages.median() if not valid_mileages.empty else None,
+        "median_age_days": listing_age_days(active).median(),
+        "median_discount": pd.to_numeric(
+            scored["discount_percent"], errors="coerce"
+        ).median(),
+        "positive_rate": float(positive.mean() * 100) if len(scored) else None,
+    }
+
+
+def aggregate_price_by_year(active: pd.DataFrame) -> pd.DataFrame:
+    rows = active.copy()
+    rows["year"] = _year_series(rows)
+    rows["price"] = pd.to_numeric(rows["price"], errors="coerce")
+    rows = rows.loc[
+        rows["year"].notna()
+        & rows["price"].notna()
+        & rows["price"].apply(classify_price).eq(DataQuality.VALID)
+    ]
+    result = rows.groupby("year", sort=True)["price"].agg(
+        median_asking_price="median", listing_count="size"
+    ).reset_index()
+    result["year"] = result["year"].astype(int)
+    return result
+
+
+MILEAGE_BUCKETS = (0, 50_000, 100_000, 150_000, 200_000, 250_000, 300_000, float("inf"))
+MILEAGE_LABELS = ("0–50k", "50–100k", "100–150k", "150–200k", "200–250k", "250–300k", "300k+")
+AGE_BUCKETS = (0, 3, 8, 15, 31, 61, float("inf"))
+AGE_LABELS = ("0–2 days", "3–7 days", "8–14 days", "15–30 days", "31–60 days", "60+ days")
+SCORE_BUCKETS = (0, 20, 40, 60, 80, 101)
+SCORE_LABELS = ("0–20", "20–40", "40–60", "60–80", "80–100")
+
+
+def aggregate_price_by_mileage(active: pd.DataFrame) -> pd.DataFrame:
+    rows = active.copy()
+    rows["price"] = pd.to_numeric(rows["price"], errors="coerce")
+    rows["mileage_km"] = pd.to_numeric(rows["mileage_km"], errors="coerce")
+    rows = rows.loc[
+        rows["price"].apply(classify_price).eq(DataQuality.VALID)
+        & rows["mileage_km"].apply(classify_mileage).eq(DataQuality.VALID)
+    ].copy()
+    rows["Mileage bucket"] = pd.cut(
+        rows["mileage_km"], MILEAGE_BUCKETS, labels=MILEAGE_LABELS, right=False
+    )
+    return rows.groupby("Mileage bucket", observed=False)["price"].agg(
+        median_asking_price="median", listing_count="size"
+    ).reset_index()
+
+
+def bucket_counts(values: pd.Series, bins: tuple, labels: tuple, name: str) -> pd.DataFrame:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    buckets = pd.cut(numeric, bins, labels=labels, right=False)
+    counts = buckets.value_counts(sort=False).reindex(labels, fill_value=0)
+    return pd.DataFrame({name: labels, "listing_count": counts.to_numpy()})
+
+
+def build_score_inactive_calibration(rows: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate last persisted pre-inactivity scores by listing lifetime."""
+    columns = ["Score bucket", "median_time_to_inactive_days", "sample_count"]
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+    values = rows.copy()
+    posted = pd.to_datetime(
+        values["posted_date"], dayfirst=True, utc=True, errors="coerce"
+    )
+    inactive = pd.to_datetime(
+        values["inactive_at"], utc=True, errors="coerce", format="mixed"
+    )
+    values["time_to_inactive_days"] = (
+        inactive.dt.normalize() - posted.dt.normalize()
+    ).dt.days
+    values["opportunity_score"] = pd.to_numeric(
+        values["opportunity_score"], errors="coerce"
+    )
+    values = values.loc[
+        values["time_to_inactive_days"].ge(0)
+        & values["opportunity_score"].between(0, 100)
+    ].copy()
+    values["Score bucket"] = pd.cut(
+        values["opportunity_score"],
+        SCORE_BUCKETS,
+        labels=SCORE_LABELS,
+        right=False,
+    )
+    return (
+        values.groupby("Score bucket", observed=False)["time_to_inactive_days"]
+        .agg(median_time_to_inactive_days="median", sample_count="size")
+        .reset_index()
+    )
+
+
+def build_score_inactive_display_table(calibration: pd.DataFrame) -> pd.DataFrame:
+    """Format calibration medians and sample quality without changing results."""
+    display = calibration.copy()
+    display["Median Time to Inactive"] = display[
+        "median_time_to_inactive_days"
+    ].map(lambda value: "—" if pd.isna(value) else f"{float(value):.1f}d")
+    display["n"] = display["sample_count"].astype(int)
+    display["Sample Quality"] = display["n"].map(
+        lambda count: "NO DATA" if count == 0 else "LOW SAMPLE" if count < 5 else "OK"
+    )
+    return display[[
+        "Score bucket", "Median Time to Inactive", "n", "Sample Quality"
+    ]].rename(columns={"Score bucket": "Score Bucket"})
+
+
+def build_score_inactive_chart(calibration: pd.DataFrame) -> alt.Chart:
+    """Build the ordered, zero-baseline calibration visualization."""
+    chart_data = calibration.copy()
+    chart_data["sample_label"] = chart_data["sample_count"].map(
+        lambda count: f"n={int(count)}"
+    )
+    base = alt.Chart(chart_data).encode(
+        x=alt.X(
+            "Score bucket:N",
+            sort=list(SCORE_LABELS),
+            title="Last Opportunity Score Before Inactivity",
+        ),
+        y=alt.Y(
+            "median_time_to_inactive_days:Q",
+            title="Median Time to Inactive (days)",
+            scale=alt.Scale(zero=True, domainMin=0),
+        ),
+        tooltip=[
+            alt.Tooltip("Score bucket:N", title="Score bucket"),
+            alt.Tooltip(
+                "median_time_to_inactive_days:Q",
+                title="Median days",
+                format=".1f",
+            ),
+            alt.Tooltip("sample_count:Q", title="n", format="d"),
+        ],
+    )
+    bars = base.mark_bar()
+    labels = base.transform_filter(
+        "isValid(datum.median_time_to_inactive_days)"
+    ).mark_text(dy=-8).encode(text="sample_label:N")
+    return (bars + labels).properties(height=300)
+
+
+def build_confidence_mix(active: pd.DataFrame) -> pd.DataFrame:
+    return (
+        active.loc[
+            active["valuation_confidence"].isin(REAL_CONFIDENCE_LEVELS),
+            "valuation_confidence",
+        ]
+        .value_counts()
+        .reindex(REAL_CONFIDENCE_LEVELS, fill_value=0)
+        .rename_axis("Confidence")
+        .reset_index(name="listing_count")
+    )
+
+
+def build_market_coverage(active: pd.DataFrame) -> dict[str, int]:
+    return {
+        "Active": len(active),
+        "Strictly Eligible": int(active["eligibility_status"].eq("ELIGIBLE").sum()),
+        "Valued": int(active["market_value_status"].eq("OK").sum()),
+        "Scored": int(active["opportunity_score"].notna().sum()),
+        "Unscored": int(active["opportunity_score"].isna().sum()),
+        "Missing price": int(active["price"].isna().sum()),
+        "Missing mileage": int(active["mileage_km"].isna().sum()),
+        "Missing registration": int(active["first_registration"].isna().sum()),
+    }
+
+
+def build_inactive_timeline(
+    listings: pd.DataFrame, now: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    inactive = pd.to_datetime(
+        listings.loc[listings["is_active"].eq(0), "inactive_at"],
+        utc=True, errors="coerce", format="mixed",
+    ).dropna()
+    reference = now or pd.Timestamp.now(tz="UTC")
+    days = inactive.loc[inactive.between(reference - pd.Timedelta(days=30), reference)].dt.floor("D")
+    return days.value_counts().sort_index().rename_axis("date").reset_index(name="listing_count")
+
+
+def build_views_age_scatter(active: pd.DataFrame) -> pd.DataFrame:
+    result = active.copy()
+    result["Listing Age (days)"] = listing_age_days(result)
+    result["Views"] = pd.to_numeric(result["view_count"], errors="coerce")
+    result["Asking Price"] = pd.to_numeric(result["price"], errors="coerce")
+    result["Opportunity Score"] = pd.to_numeric(
+        result["opportunity_score"], errors="coerce"
+    )
+    return result.loc[
+        result["Listing Age (days)"].notna() & result["Views"].notna(),
+        ["Listing Age (days)", "Views", "title", "Asking Price", "Opportunity Score"],
+    ].rename(columns={"title": "Title"})
+
+
+def build_market_top_table(active: pd.DataFrame, limit: int = 5) -> pd.DataFrame:
+    top = sort_opportunities(
+        active.loc[active["opportunity_score"].notna()]
+    ).head(limit)
+    links = [
+        url if isinstance(url, str) and is_listing_detail_url(url, listing_id) else None
+        for url, listing_id in zip(top["url"], top["listing_id"])
+    ]
+    return pd.DataFrame({
+        "Score": top["opportunity_score"],
+        "Title": top["title"],
+        "Asking": top["price"].map(format_euro),
+        "Estimated Market": top["estimated_market_price"].map(format_euro),
+        "Market Gap €": top["market_gap_eur"].map(format_signed_euro),
+        "Discount %": top["discount_percent"].map(format_signed_percent),
+        "Confidence": top["valuation_confidence"],
+        "Open Listing": links,
+    }, index=top.index)
+
+
 def render_market_overview() -> None:
+    started = time.perf_counter()
     st.title("Market / Overview")
+    configs = load_search_configs()
+    enabled = tuple(name for name, config in configs.items() if config.enabled)
+    if not enabled:
+        st.info("No enabled markets are configured.")
+        return
+    selected = st.selectbox("Market", enabled, format_func=market_label, key="market_overview_search")
     overview = load_overview()
+    listings = load_listings().copy()
     market = load_dashboard_frame(active_market_only=True).copy()
+    try:
+        selected_listings = scope_market_rows(listings, selected, enabled)
+        market = scope_market_rows(market, selected, enabled)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
     if market.empty:
         st.info("No active market data available.")
         return
-    clean = int(market["eligibility_status"].eq("ELIGIBLE").sum())
-    valued = int(market["estimated_market_price"].notna().sum())
-    scored = int(market["opportunity_score"].notna().sum())
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Active listings", overview["active"])
-    c2.metric("Clean eligible", clean)
-    c3.metric("Valuations available", valued)
-    c4.metric("Opportunity scores", scored)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Median asking price", format_euro(pd.to_numeric(market["price"], errors="coerce").median()))
-    c2.metric("Median estimated market", format_euro(pd.to_numeric(market["estimated_market_price"], errors="coerce").median()))
-    c3.metric("Median discount", format_percent(pd.to_numeric(market["discount_percent"], errors="coerce").median()))
 
+    snapshot = build_market_snapshot(market)
+    st.subheader("Market Snapshot")
+    columns = st.columns(6)
+    values = (
+        ("Active Listings", snapshot["active"]),
+        ("Median Asking Price", format_euro(snapshot["median_price"])),
+        ("Median Mileage", format_mileage(snapshot["median_mileage"])),
+        ("Median Listing Age", f"{snapshot['median_age_days']:.0f} days" if pd.notna(snapshot["median_age_days"]) else "—"),
+        ("Median Discount", format_percent(snapshot["median_discount"])),
+        ("Positive Opportunity Rate", format_percent(snapshot["positive_rate"])),
+    )
+    for column, (label, value) in zip(columns, values):
+        help_text = "Discount relative to estimated asking-market value, not realized sale value." if label == "Median Discount" else None
+        column.metric(label, value, help=help_text)
+
+    st.subheader("Market Structure")
+    left, right = st.columns(2)
+    by_year = aggregate_price_by_year(market)
+    with left:
+        st.markdown("**Median Asking Price by Year**")
+        st.bar_chart(by_year, x="year", y="median_asking_price")
+        with st.expander("Year sample counts"):
+            st.dataframe(by_year, hide_index=True, use_container_width=True)
+    by_mileage = aggregate_price_by_mileage(market)
+    with right:
+        st.markdown("**Median Asking Price by Mileage**")
+        st.bar_chart(by_mileage, x="Mileage bucket", y="median_asking_price")
+        with st.expander("Mileage-bucket sample counts"):
+            st.dataframe(by_mileage, hide_index=True, use_container_width=True)
+
+    st.subheader("Inventory")
+    left, right = st.columns(2)
+    age_distribution = bucket_counts(listing_age_days(market), AGE_BUCKETS, AGE_LABELS, "Listing age")
+    with left:
+        st.markdown("**Listing Age Distribution**")
+        st.bar_chart(age_distribution, x="Listing age", y="listing_count")
+    score_distribution = bucket_counts(market["opportunity_score"], SCORE_BUCKETS, SCORE_LABELS, "Score")
+    with right:
+        st.markdown("**Opportunity Score Distribution**")
+        st.bar_chart(score_distribution, x="Score", y="listing_count")
+
+    st.subheader("Analysis Quality")
+    confidence = build_confidence_mix(market)
+    st.bar_chart(confidence, x="Confidence", y="listing_count")
+
+    st.subheader("Market Activity")
+    left, right = st.columns(2)
+    timeline = build_inactive_timeline(selected_listings)
+    with left:
+        st.markdown("**Listings Becoming Inactive — Last 30 Days**")
+        st.caption("INACTIVE does not mean sold; listings may be deleted, withdrawn, expired, sold, or otherwise unavailable.")
+        st.line_chart(timeline, x="date", y="listing_count", x_label="Day")
+    selected_ids = set(selected_listings["listing_id"].astype(str))
+    drops = load_price_drop_summary()
+    drops = drops.loc[drops["listing_id"].astype(str).isin(selected_ids)].copy()
+    with right:
+        st.markdown("**Price Reduction Activity**")
+        d1, d2, d3 = st.columns(3)
+        d1.metric("Listings With Observed Price Drop", len(drops))
+        d2.metric("Median Observed Price Drop €", format_euro(drops["price_drop_abs"].median() if not drops.empty else None))
+        d3.metric("Median Observed Price Drop %", format_percent(drops["price_drop_percent"].median() if not drops.empty else None))
+        if not drops.empty:
+            drop_timeline = pd.to_datetime(drops["last_reduction_at"], utc=True, errors="coerce").dropna().dt.floor("D").value_counts().sort_index().rename_axis("date").reset_index(name="listing_count")
+            st.bar_chart(drop_timeline, x="date", y="listing_count", x_label="Day")
+
+    calibration_rows = load_inactive_score_calibration()
+    calibration_rows = calibration_rows.loc[
+        calibration_rows["listing_id"].astype(str).isin(selected_ids)
+    ] if not calibration_rows.empty else calibration_rows
+    calibration = build_score_inactive_calibration(calibration_rows)
+    st.markdown("**Opportunity Score vs Time to Inactive**")
+    qualifying = int(calibration["sample_count"].sum()) if not calibration.empty else 0
+    if qualifying == 0:
+        st.info(
+            "Not enough historical scored inactive listings yet. This chart "
+            "will become more meaningful as snapshot history accumulates."
+        )
+    else:
+        chart = build_score_inactive_chart(calibration)
+        st.altair_chart(chart, width="stretch")
+        display = build_score_inactive_display_table(calibration)
+        st.dataframe(display, hide_index=True, use_container_width=True)
+        if display["Sample Quality"].eq("LOW SAMPLE").any():
+            st.caption(
+                "Buckets with fewer than 5 listings are early-sample estimates "
+                "and should not be interpreted as stable calibration. Historical "
+                "sample is still small; calibration becomes more meaningful as "
+                "more scored listings become inactive."
+            )
     st.caption(
-        f"Latest search presence: {overview['latest_search_presence'] or '—'} · "
-        f"Latest detail observation: {overview['latest_detail_observation'] or '—'} · "
-        f"Latest lifecycle check: {overview['latest_lifecycle_check'] or '—'}"
+        "Lower values mean listings became unavailable sooner after publication. "
+        "Score uses the last recorded Opportunity Score before inactivity. "
+        "Inactive does not necessarily mean sold."
     )
+
+    st.subheader("Demand Exploration")
+    scatter = build_views_age_scatter(market)
+    st.markdown("**Views vs Listing Age**")
+    st.caption("Kleinanzeigen views are cumulative observed page views.")
+    st.scatter_chart(scatter, x="Listing Age (days)", y="Views")
+
     st.subheader("Top Opportunities")
-    top = sort_opportunities(market.loc[market["opportunity_score"].notna()]).head(5)
-    st.dataframe(
-        top[["opportunity_score", "title", "price", "estimated_market_price", "discount_percent", "url"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.subheader("Data Quality")
-    listings = load_listings()
-    st.write({
-        "Missing price": int(listings["price"].isna().sum()),
-        "Missing mileage": int(listings["mileage_km"].isna().sum()),
-        "Missing registration": int(listings["first_registration"].isna().sum()),
-        "Unvalued active": len(market) - valued,
-    })
+    top = build_market_top_table(market)
+    st.dataframe(top, use_container_width=True, hide_index=True, column_config={"Score": st.column_config.NumberColumn(format="%.1f"), "Open Listing": st.column_config.LinkColumn(display_text="Open ↗")})
+
+    st.subheader("Coverage & Data Quality")
+    coverage = build_market_coverage(market)
+    coverage_columns = st.columns(5)
+    for column, label in zip(coverage_columns, ("Active", "Strictly Eligible", "Valued", "Scored", "Unscored")):
+        column.metric(label, coverage[label])
+    st.caption(" · ".join(f"{label}: {coverage[label]}" for label in ("Missing price", "Missing mileage", "Missing registration")))
+    with st.expander("Data freshness", expanded=False):
+        st.caption(
+            f"Latest search presence: {format_datetime(overview['latest_search_presence'])} · "
+            f"Latest detail observation: {format_datetime(overview['latest_detail_observation'])} · "
+            f"Latest lifecycle check: {format_datetime(overview['latest_lifecycle_check'])}"
+        )
+    st.caption(f"Overview prepared in {time.perf_counter() - started:.2f}s")

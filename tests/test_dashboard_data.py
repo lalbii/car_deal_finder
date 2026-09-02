@@ -15,6 +15,7 @@ from dashboard.data import (
     build_opportunity_frame,
     canonical_lifecycle_status,
     dashboard_source_freshness,
+    query_inactive_score_calibration,
 )
 from dashboard.formatting import (
     format_datetime,
@@ -32,7 +33,26 @@ from dashboard.views import (
     _format_observed_duration,
     _inactive_count_label,
     _inactive_filter_argument,
+    AGE_BUCKETS,
+    AGE_LABELS,
+    MILEAGE_LABELS,
+    SCORE_BUCKETS,
+    SCORE_LABELS,
+    aggregate_price_by_mileage,
+    aggregate_price_by_year,
+    bucket_counts,
+    build_confidence_mix,
     build_history_series,
+    build_inactive_timeline,
+    build_market_coverage,
+    build_market_snapshot,
+    build_score_inactive_calibration,
+    build_score_inactive_chart,
+    build_score_inactive_display_table,
+    build_market_top_table,
+    build_views_age_scatter,
+    listing_age_days,
+    scope_market_rows,
     build_opportunity_funnel,
     build_inactive_table,
     build_comparables_table,
@@ -614,6 +634,122 @@ class DashboardDataTests(unittest.TestCase):
         self.assertEqual(
             funnel["Shown scored"] + funnel["Shown unscored"], funnel["Shown"]
         )
+
+    def test_market_overview_v2_aggregations_are_read_only_and_canonical(self):
+        valid_url = "https://www.kleinanzeigen.de/s-anzeige/car/1-216-1"
+        frame = pd.DataFrame([
+            {"listing_id": "1", "search_name": "one", "price": 10000, "mileage_km": 75000, "first_registration": "2018", "posted_date": "01.01.2026", "last_checked_at": "2026-01-04T12:00:00Z", "discount_percent": 10.0, "market_gap_eur": 1000, "opportunity_score": 70.0, "valuation_confidence": "HIGH", "eligibility_status": "ELIGIBLE", "market_value_status": "OK", "estimated_market_price": 11000, "view_count": 100, "title": "First", "url": valid_url},
+            {"listing_id": "2", "search_name": "two", "price": 20000, "mileage_km": 175000, "first_registration": "2020", "posted_date": "01.01.2026", "last_checked_at": "2026-01-10T12:00:00Z", "discount_percent": -10.0, "market_gap_eur": -2000, "opportunity_score": 30.0, "valuation_confidence": "LOW", "eligibility_status": "ELIGIBLE", "market_value_status": "OK", "estimated_market_price": 18000, "view_count": None, "title": "Second", "url": "https://example.test/2"},
+            {"listing_id": "3", "search_name": "one", "price": None, "mileage_km": 125000, "first_registration": "2018", "posted_date": None, "last_checked_at": "2026-01-10T12:00:00Z", "discount_percent": None, "market_gap_eur": None, "opportunity_score": None, "valuation_confidence": "UNAVAILABLE", "eligibility_status": "INELIGIBLE", "market_value_status": "TARGET_INELIGIBLE", "estimated_market_price": None, "view_count": None, "title": "Third", "url": None},
+        ])
+        scoped = scope_market_rows(frame, "one", ("one", "two"))
+        self.assertEqual(scoped["listing_id"].tolist(), ["1", "3"])
+        with self.assertRaises(ValueError):
+            scope_market_rows(frame.drop(columns="search_name"), "one", ("one", "two"))
+        self.assertEqual(len(scope_market_rows(frame, "one", ("one",))), 3)
+
+        snapshot = build_market_snapshot(frame)
+        self.assertEqual(snapshot["active"], 3)
+        self.assertEqual(snapshot["median_price"], 15000)
+        self.assertEqual(snapshot["median_mileage"], 125000)
+        self.assertEqual(snapshot["median_age_days"], 6)
+        self.assertEqual(snapshot["median_discount"], 0)
+        self.assertEqual(snapshot["positive_rate"], 50)
+        self.assertEqual(listing_age_days(frame).dropna().tolist(), [3, 9])
+
+        by_year = aggregate_price_by_year(frame)
+        self.assertEqual(by_year["year"].tolist(), [2018, 2020])
+        self.assertEqual(by_year["listing_count"].tolist(), [1, 1])
+        by_mileage = aggregate_price_by_mileage(frame)
+        self.assertEqual(by_mileage.set_index("Mileage bucket").loc["50–100k", "listing_count"], 1)
+        self.assertEqual(by_mileage.set_index("Mileage bucket").loc["150–200k", "listing_count"], 1)
+        ages = bucket_counts(listing_age_days(frame), AGE_BUCKETS, AGE_LABELS, "Age")
+        self.assertEqual(ages["listing_count"].sum(), 2)
+        scores = bucket_counts(frame["opportunity_score"], SCORE_BUCKETS, SCORE_LABELS, "Score")
+        self.assertEqual(scores["listing_count"].sum(), 2)
+        self.assertEqual(build_confidence_mix(frame)["listing_count"].sum(), 2)
+        self.assertNotIn("UNAVAILABLE", build_confidence_mix(frame)["Confidence"].tolist())
+
+        scatter = build_views_age_scatter(frame)
+        self.assertEqual(scatter["Title"].tolist(), ["First"])
+        top = build_market_top_table(frame)
+        self.assertEqual(top["Title"].tolist(), ["First", "Second"])
+        self.assertEqual(top.iloc[0]["Open Listing"], valid_url)
+        self.assertTrue(pd.isna(top.iloc[1]["Open Listing"]))
+        coverage = build_market_coverage(frame)
+        self.assertEqual(coverage["Strictly Eligible"], 2)
+        self.assertEqual(coverage["Valued"], 2)
+        self.assertEqual(coverage["Scored"], 2)
+        self.assertEqual(coverage["Unscored"], 1)
+
+        inactive = pd.DataFrame([
+            {"is_active": 0, "inactive_at": "2026-01-15T10:00:00Z"},
+            {"is_active": 0, "inactive_at": "2025-12-01T10:00:00Z"},
+            {"is_active": 1, "inactive_at": "2026-01-16T10:00:00Z"},
+        ])
+        timeline = build_inactive_timeline(inactive, pd.Timestamp("2026-01-20", tz="UTC"))
+        self.assertEqual(timeline["listing_count"].sum(), 1)
+
+    def test_score_vs_inactive_uses_last_pre_inactivity_snapshot_and_lifetime(self):
+        connection = sqlite3.connect(":memory:")
+        connection.executescript("""
+            CREATE TABLE listings (
+                listing_id TEXT, title TEXT, posted_date TEXT, first_seen TEXT,
+                last_seen TEXT, inactive_at TEXT, is_active INTEGER
+            );
+            CREATE TABLE opportunity_snapshots (
+                id INTEGER PRIMARY KEY, listing_id TEXT, observed_at TEXT,
+                opportunity_score REAL
+            );
+            INSERT INTO listings VALUES
+                ('1', 'Inactive', '01.01.2026', '2025-12-01', '2026-01-05', '2026-01-11T10:00:00Z', 0),
+                ('2', 'Active', '01.01.2026', NULL, NULL, '2026-01-11T10:00:00Z', 1),
+                ('3', 'No inactive time', '01.01.2026', NULL, NULL, NULL, 0);
+            INSERT INTO opportunity_snapshots VALUES
+                (1, '1', '2026-01-05T10:00:00Z', 10),
+                (2, '1', '2026-01-10T10:00:00Z', 20),
+                (3, '1', '2026-01-12T10:00:00Z', 99),
+                (4, '2', '2026-01-10T10:00:00Z', 80),
+                (5, '3', '2026-01-10T10:00:00Z', 60);
+        """)
+        rows = query_inactive_score_calibration(connection)
+        connection.close()
+        self.assertEqual(rows["listing_id"].tolist(), ["1"])
+        self.assertEqual(rows.iloc[0]["opportunity_score"], 20)
+        self.assertEqual(rows.iloc[0]["observed_at"], "2026-01-10T10:00:00Z")
+
+        boundary_rows = pd.DataFrame([
+            {"posted_date": "01.01.2026", "inactive_at": "2026-01-11", "opportunity_score": score, "first_seen": "1900-01-01", "last_seen": "2100-01-01"}
+            for score in (0, 19.9, 20, 40, 60, 80, 100)
+        ] + [
+            {"posted_date": "invalid", "inactive_at": "2026-01-11", "opportunity_score": 30},
+            {"posted_date": "12.01.2026", "inactive_at": "2026-01-11", "opportunity_score": 30},
+            {"posted_date": "01.01.2026", "inactive_at": "2026-01-11", "opportunity_score": None},
+        ])
+        result = build_score_inactive_calibration(boundary_rows)
+        counts = result.set_index("Score bucket")["sample_count"]
+        self.assertEqual(counts.tolist(), [2, 1, 1, 1, 2])
+        self.assertTrue((result.loc[result["sample_count"].gt(0), "median_time_to_inactive_days"] == 10).all())
+        display = build_score_inactive_display_table(result)
+        self.assertEqual(display["Score Bucket"].tolist(), list(SCORE_LABELS))
+        self.assertEqual(display["n"].tolist(), [2, 1, 1, 1, 2])
+        self.assertEqual(
+            display["Sample Quality"].tolist(),
+            ["LOW SAMPLE", "LOW SAMPLE", "LOW SAMPLE", "LOW SAMPLE", "LOW SAMPLE"],
+        )
+        empty_bucket = result.copy()
+        empty_bucket.loc[empty_bucket["Score bucket"].astype(str).eq("80–100"), ["median_time_to_inactive_days", "sample_count"]] = [float("nan"), 0]
+        empty_display = build_score_inactive_display_table(empty_bucket)
+        self.assertEqual(empty_display.iloc[-1]["Median Time to Inactive"], "—")
+        self.assertEqual(empty_display.iloc[-1]["Sample Quality"], "NO DATA")
+        chart_spec = build_score_inactive_chart(empty_bucket).to_dict()
+        self.assertEqual(chart_spec["layer"][0]["encoding"]["x"]["sort"], list(SCORE_LABELS))
+        self.assertEqual(chart_spec["layer"][0]["encoding"]["y"]["scale"]["domainMin"], 0)
+        self.assertTrue(chart_spec["layer"][0]["encoding"]["y"]["scale"]["zero"])
+        self.assertNotIn("date", str(chart_spec).casefold())
+        self.assertEqual(build_score_inactive_calibration(pd.DataFrame()).columns.tolist(), [
+            "Score bucket", "median_time_to_inactive_days", "sample_count"
+        ])
 
     def test_sqlite_connection_is_query_only(self):
         with _connect_read_only() as connection:

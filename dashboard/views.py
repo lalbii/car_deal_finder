@@ -28,6 +28,7 @@ from dashboard.formatting import (
     format_signed_percent,
     relative_time,
 )
+from parsers.status_parser import is_listing_detail_url
 
 
 OPPORTUNITY_HELP = (
@@ -138,6 +139,50 @@ def build_opportunities_table(filtered: pd.DataFrame) -> pd.DataFrame:
             "Status": is_active.map(canonical_lifecycle_status),
             "Open Listing": filtered["url"],
         }
+    )
+
+
+
+def build_comparables_table(comparables: pd.DataFrame) -> pd.DataFrame:
+    """Build Listing Detail rows with validated persisted URLs as metadata."""
+    rows = comparables.head(10).copy()
+    listing_ids = (
+        rows["listing_id"]
+        if "listing_id" in rows
+        else pd.Series(None, index=rows.index, dtype=object)
+    )
+    urls = (
+        rows["url"]
+        if "url" in rows
+        else pd.Series(None, index=rows.index, dtype=object)
+    )
+    open_listing = pd.Series(
+        (
+            url if isinstance(url, str) and is_listing_detail_url(url, listing_id) else None
+            for url, listing_id in zip(urls, listing_ids)
+        ),
+        index=rows.index,
+        dtype=object,
+    )
+
+    def column(name: str) -> pd.Series:
+        return (
+            rows[name]
+            if name in rows
+            else pd.Series(None, index=rows.index, dtype=object)
+        )
+
+    return pd.DataFrame(
+        {
+            "Title": column("title"),
+            "Price": column("price"),
+            "Year": column("year"),
+            "Mileage": column("mileage_km"),
+            "Body Style": column("candidate_body_style"),
+            "Similarity": column("similarity_weight"),
+            "Open Listing": open_listing,
+        },
+        index=rows.index,
     )
 
 
@@ -761,13 +806,15 @@ def render_listing_detail() -> None:
     c6.metric("Final score", format_score(score.opportunity_score))
 
     with st.expander("Top comparables used", expanded=False):
-        comparables = market.comparables.head(10).copy()
-        columns = [
-            "title", "price", "year", "mileage_km", "candidate_body_style",
-            "similarity_weight",
-        ]
-        columns = [column for column in columns if column in comparables]
-        st.dataframe(comparables[columns], use_container_width=True, hide_index=True)
+        comparables = build_comparables_table(market.comparables)
+        st.dataframe(
+            comparables,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Open Listing": st.column_config.LinkColumn(display_text="Open ↗"),
+            },
+        )
 
     history = load_history(listing_id)
     with st.expander("Observation history", expanded=False):

@@ -34,6 +34,7 @@ from dashboard.views import (
     _inactive_filter_argument,
     build_history_series,
     build_inactive_table,
+    build_comparables_table,
     build_opportunities_table,
     filter_inactive_listings,
     filter_opportunities,
@@ -45,6 +46,46 @@ from dashboard.views import (
 
 
 class DashboardDataTests(unittest.TestCase):
+    def test_comparable_table_validates_persisted_urls_without_reordering(self):
+        valid = "https://www.kleinanzeigen.de/s-anzeige/bmw-320d/123-216-1"
+        source = pd.DataFrame([
+            {
+                "listing_id": "123", "title": "First", "price": 10000,
+                "year": 2016, "mileage_km": 150000,
+                "candidate_body_style": "WAGON", "similarity_weight": 0.91,
+                "url": valid,
+            },
+            {
+                "listing_id": "456", "title": "Missing", "price": 11000,
+                "year": 2017, "mileage_km": 140000,
+                "candidate_body_style": "SEDAN", "similarity_weight": 0.82,
+                "url": None,
+            },
+            {
+                "listing_id": "789", "title": "Search", "price": 12000,
+                "year": 2018, "mileage_km": 130000,
+                "candidate_body_style": "SUV", "similarity_weight": 0.73,
+                "url": "https://www.kleinanzeigen.de/s-autos/bmw/k0c216",
+            },
+            {
+                "listing_id": "999", "title": "External", "price": 13000,
+                "year": 2019, "mileage_km": 120000,
+                "candidate_body_style": "COUPE", "similarity_weight": 0.64,
+                "url": "https://example.test/s-anzeige/bmw/999-216-1",
+            },
+        ])
+
+        table = build_comparables_table(source)
+
+        self.assertEqual(
+            table.columns.tolist(),
+            ["Title", "Price", "Year", "Mileage", "Body Style", "Similarity", "Open Listing"],
+        )
+        self.assertEqual(table["Title"].tolist(), source["title"].tolist())
+        self.assertEqual(table["Similarity"].tolist(), source["similarity_weight"].tolist())
+        self.assertEqual(table.iloc[0]["Open Listing"], valid)
+        self.assertTrue(all(value is None for value in table["Open Listing"].iloc[1:]))
+
     @staticmethod
     def inactive_listings_fixture() -> pd.DataFrame:
         return pd.DataFrame([
@@ -459,6 +500,10 @@ class DashboardDataTests(unittest.TestCase):
         self.assertLess(table.columns.get_loc("Listing Date"), table.columns.get_loc("Last Checked"))
         self.assertLess(table.columns.get_loc("Last Checked"), table.columns.get_loc("Listing Age"))
         self.assertEqual(table["listing_id"].tolist(), ["a", "b", "c"])
+        self.assertEqual(
+            table["Open Listing"].tolist(),
+            frame["url"].tolist(),
+        )
         self.assertEqual(canonical_lifecycle_status("uncertain"), "UNKNOWN")
 
     def test_filters_and_default_sort_are_deterministic(self):
@@ -528,6 +573,8 @@ class DashboardDataTests(unittest.TestCase):
             "last_checked_at": "2026-01-02T13:00:00Z", "is_active": 1,
         })
         comparables = pd.DataFrame([{
+            "listing_id": "2",
+            "url": "https://www.kleinanzeigen.de/s-anzeige/bmw-320d-kombi/2-216-1",
             "title": "BMW 320d Kombi", "price": 10000, "year": 2016,
             "mileage_km": 155000, "candidate_body_style": "WAGON",
             "similarity_weight": 0.9,
@@ -582,7 +629,18 @@ class DashboardDataTests(unittest.TestCase):
                 call.args[0] for call in streamlit.dataframe.call_args_list
                 if call.args and isinstance(call.args[0], pd.DataFrame)
             ]
-            self.assertTrue(any("similarity_weight" in table for table in comparable_tables))
+            comparable_table = next(
+                table for table in comparable_tables if "Open Listing" in table
+            )
+            self.assertEqual(
+                comparable_table.iloc[0]["Open Listing"],
+                "https://www.kleinanzeigen.de/s-anzeige/bmw-320d-kombi/2-216-1",
+            )
+            dataframe_call = next(
+                call for call in streamlit.dataframe.call_args_list
+                if call.args and call.args[0] is comparable_table
+            )
+            self.assertIn("Open Listing", dataframe_call.kwargs["column_config"])
 
 
 if __name__ == "__main__":
